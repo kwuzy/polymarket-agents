@@ -27,3 +27,5 @@ archive.zip
 .cache
 .DS_Store
 local_db*
+outputs/backtests/
+data/snapshots/gamma_markets_sample.json
