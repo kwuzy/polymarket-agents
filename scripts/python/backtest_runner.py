@@ -83,13 +83,59 @@ def parse_spread(market: Dict) -> float:
         return 1.0
 
 
+def infer_category_from_text(text: str) -> str:
+    t = (text or "").lower()
+    keyword_map = {
+        "politics": ["trump", "election", "senate", "house", "president", "white house", "congress", "democrat", "republican", "governor", "fed", "powell"],
+        "sports": ["nba", "nfl", "mlb", "nhl", "ufc", "soccer", "football", "super bowl", "championship", "final", "playoff", "world cup", "f1", "nascar", "tennis", "golf"],
+        "crypto": ["bitcoin", "btc", "ethereum", "eth", "solana", "crypto", "token", "binance", "coinbase", "blockchain"],
+        "business": ["stock", "nasdaq", "s&p", "dow", "tesla", "apple", "microsoft", "earnings", "ipo", "revenue", "inflation", "gdp", "rate cut"],
+        "entertainment": ["movie", "oscar", "grammy", "emmy", "album", "box office", "netflix", "youtube", "tiktok", "celebrity"],
+        "science": ["space", "nasa", "spacex", "climate", "earthquake", "hurricane", "weather", "ai", "openai", "research"],
+    }
+    for cat, words in keyword_map.items():
+        if any(w in t for w in words):
+            return cat
+    return "other"
+
+
 def category_of(market: Dict) -> str:
+    # Prefer explicit category when available.
+    for key in ["category", "group", "topic"]:
+        raw = market.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip().lower()
+
     events = market.get("events") or []
     if events and isinstance(events, list):
-        tags = events[0].get("tags") or []
-        if tags:
-            return (tags[0].get("label") or "unknown").lower()
-    return "unknown"
+        ev0 = events[0]
+        for key in ["category", "group", "topic"]:
+            raw = ev0.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip().lower()
+
+        # Fallback to text inference from event fields.
+        text = " ".join(
+            [
+                str(ev0.get("title", "")),
+                str(ev0.get("slug", "")),
+                str(ev0.get("ticker", "")),
+                str(ev0.get("description", "")),
+            ]
+        )
+        inferred = infer_category_from_text(text)
+        if inferred != "other":
+            return inferred
+
+    # Final fallback to market text inference.
+    market_text = " ".join(
+        [
+            str(market.get("question", "")),
+            str(market.get("slug", "")),
+            str(market.get("description", "")),
+        ]
+    )
+    return infer_category_from_text(market_text)
 
 
 def synth_signals(market: Dict, implied: float, seed: int) -> Dict[str, float]:
@@ -442,6 +488,60 @@ def write_mode_comparison_csv(path: Path, by_mode: Dict[str, Dict]) -> None:
             )
 
 
+def _top_category_rows(by_category: Dict[str, Dict], top_n: int = 8) -> List[str]:
+    rows = sorted(
+        by_category.items(),
+        key=lambda kv: (kv[1].get("pnl", 0.0), kv[1].get("trades", 0)),
+        reverse=True,
+    )[:top_n]
+    out = []
+    for cat, stats in rows:
+        out.append(
+            f"- {cat}: trades={stats.get('trades',0)}, win_rate={stats.get('win_rate',0):.3f}, pnl={stats.get('pnl',0.0):.4f}, avg_pnl={stats.get('avg_pnl',0.0):.4f}"
+        )
+    return out
+
+
+def write_run_summary_md(path: Path, report: Dict) -> None:
+    baseline = report.get("baseline") or {}
+    top = (report.get("top10") or [{}])[0]
+    mode_cmp = report.get("mode_comparison") or {}
+
+    lines = []
+    lines.append("# Backtest Run Summary")
+    lines.append("")
+    lines.append(f"- Timestamp UTC: `{report.get('timestamp_utc','')}`")
+    lines.append(f"- Execution mode (primary run): `{top.get('execution_mode','')}`")
+    lines.append("")
+
+    lines.append("## Baseline vs Best (primary run)")
+    lines.append("")
+    lines.append(f"- Baseline weights: `{baseline.get('weights',{})}`")
+    lines.append(f"- Baseline: pnl={baseline.get('pnl',0.0):.4f}, win_rate={baseline.get('win_rate',0):.3f}, trades={baseline.get('trades',0)}, stop_reason={baseline.get('stop_reason','')} ")
+    lines.append(f"- Best weights: `{top.get('weights',{})}`")
+    lines.append(f"- Best: pnl={top.get('pnl',0.0):.4f}, win_rate={top.get('win_rate',0):.3f}, trades={top.get('trades',0)}, stop_reason={top.get('stop_reason','')} ")
+    lines.append("")
+
+    if mode_cmp:
+        lines.append("## Mode comparison")
+        lines.append("")
+        for mode in ["all_trades", "single_ladder"]:
+            payload = mode_cmp.get(mode) or {}
+            best = payload.get("best") or {}
+            base = payload.get("baseline") or {}
+            lines.append(
+                f"- {mode}: best_pnl={best.get('pnl',0.0):.4f}, best_win_rate={best.get('win_rate',0):.3f}, baseline_pnl={base.get('pnl',0.0):.4f}, baseline_win_rate={base.get('win_rate',0):.3f}"
+            )
+        lines.append("")
+
+    lines.append("## Baseline category/regime snapshot")
+    lines.append("")
+    lines.extend(_top_category_rows(baseline.get("by_category", {}), top_n=10) or ["- no categories captured"])
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Deterministic Polymarket backtest runner")
     parser.add_argument("--config", default="configs/backtest_v0.json")
@@ -484,6 +584,7 @@ def main():
 
     leaderboard_csv = outdir / f"backtest_{ts}_leaderboard.csv"
     category_csv = outdir / f"backtest_{ts}_categories.csv"
+    summary_md = outdir / f"backtest_{ts}_summary.md"
     write_leaderboard_csv(leaderboard_csv, leaderboard)
     write_category_csv(category_csv, leaderboard)
 
@@ -501,9 +602,18 @@ def main():
         comparison_csv = outdir / f"backtest_{ts}_mode_compare.csv"
         write_mode_comparison_csv(comparison_csv, mode_payload)
 
+    summary_report = {
+        "timestamp_utc": ts,
+        "top10": leaderboard[:10],
+        "baseline": next((x for x in leaderboard if x["weights"] == cfg["weights"]), None),
+        "mode_comparison": comparison_payload,
+    }
+    write_run_summary_md(summary_md, summary_report)
+
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
     print(f"Wrote category CSV: {category_csv}")
+    print(f"Wrote summary MD: {summary_md}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
     if leaderboard:
