@@ -96,3 +96,5 @@ And writes companion reporting files:
 
 Category breakdown now uses explicit category fields when present, with text-based fallback inference from market/event metadata.
 A guardrail-aware live profile recommendation is produced from `single_ladder` results.
+
+Validation split is configurable via `validation.holdout_fraction` (default 0.25), and holdout robustness is emitted to `backtest_<timestamp>_holdout.md`.

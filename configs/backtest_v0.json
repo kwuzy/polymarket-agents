@@ -31,5 +31,8 @@
     "enabled": true,
     "step": 0.05,
     "max_variants": 250
+  },
+  "validation": {
+    "holdout_fraction": 0.25
   }
 }
