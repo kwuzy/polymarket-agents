@@ -62,11 +62,14 @@ Set `execution.mode` in config:
 
 - `single_ladder` (live-like): one active ladder, 2^n progression on losses, reset on win.
 - `all_trades` (research): every candidate is simulated as independent step-0 trade to maximize sample size.
+- `multi_line` (research, line-aware): deterministic routing across `execution.num_lines` independent ladder lines.
 
-Set `execution.max_concurrent_ladders` as a guardrail value:
+Set execution guardrails:
 
-- In `single_ladder`, it must be `1` (enforced).
-- In `all_trades`, it can be >1 for research scenarios.
+- `execution.max_concurrent_ladders`
+  - In `single_ladder`, it must be `1` (enforced).
+- `execution.num_lines`
+  - Used by `multi_line` mode (e.g., 10 means 10 independent lines).
 
 ## Risk model notes
 
