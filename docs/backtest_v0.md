@@ -70,6 +70,9 @@ Set execution guardrails:
   - In `single_ladder`, it must be `1` (enforced).
 - `execution.num_lines`
   - Used by `multi_line` mode (e.g., 10 means 10 independent lines).
+- `execution.line_assignment`
+  - `round_robin` (default): candidate i goes to line `i % N`.
+  - `market_hash`: deterministic market-id hashing to a stable line.
 
 ## Risk model notes
 
