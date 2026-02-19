@@ -102,3 +102,8 @@ Validation split is configurable via `validation.holdout_fraction` (default 0.25
 Cost sensitivity scenarios are configurable under `validation.cost_scenarios` and exported to:
 - `backtest_<timestamp>_cost_scenarios.csv`
 - `backtest_<timestamp>_cost_scenarios.md`
+
+Data quality diagnostics are exported to:
+- `backtest_<timestamp>_data_quality.md`
+
+This includes candidate/executed counts, skip reasons, execution rate, and a warning when holdout executes zero baseline trades.
