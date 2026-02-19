@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -428,6 +428,13 @@ def write_category_csv(path: Path, leaderboard: List[Dict]) -> None:
                 )
 
 
+def split_snapshot(snapshot: List[Dict], holdout_fraction: float) -> Tuple[List[Dict], List[Dict]]:
+    if holdout_fraction <= 0 or holdout_fraction >= 1:
+        return snapshot, []
+    cut = max(1, int(len(snapshot) * (1 - holdout_fraction)))
+    return snapshot[:cut], snapshot[cut:]
+
+
 def run_mode_pass(snapshot: List[Dict], cfg: Dict, force_mode: str = None) -> List[Dict]:
     cfg_local = json.loads(json.dumps(cfg))
     if force_mode is not None:
@@ -502,6 +509,35 @@ def _top_category_rows(by_category: Dict[str, Dict], top_n: int = 8) -> List[str
     return out
 
 
+def evaluate_holdout(
+    train_results: List[Dict],
+    test_snapshot: List[Dict],
+    cfg: Dict,
+    mode: str = "single_ladder",
+) -> Dict:
+    if not train_results or not test_snapshot:
+        return None
+
+    best_train = train_results[0]
+    baseline_train = next((x for x in train_results if x["weights"] == cfg["weights"]), None)
+
+    cfg_local = json.loads(json.dumps(cfg))
+    cfg_local.setdefault("execution", {})["mode"] = mode
+    if mode == "single_ladder":
+        cfg_local["execution"]["max_concurrent_ladders"] = 1
+
+    best_test = run_backtest(test_snapshot, cfg_local, best_train["weights"])
+    baseline_test = run_backtest(test_snapshot, cfg_local, cfg["weights"])
+
+    return {
+        "mode": mode,
+        "train_best": best_train,
+        "train_baseline": baseline_train,
+        "test_best": best_test,
+        "test_baseline": baseline_test,
+    }
+
+
 def choose_live_recommendation(results: List[Dict]) -> Dict:
     """Pick a guardrail-aware profile from single_ladder results.
 
@@ -528,6 +564,31 @@ def choose_live_recommendation(results: List[Dict]) -> Dict:
         return pnl - (dd * 2.0) - (streak * 0.02)
 
     return sorted(eligible, key=score, reverse=True)[0]
+
+
+def write_holdout_md(path: Path, holdout_report: Dict) -> None:
+    lines = ["# Holdout Robustness", ""]
+    if not holdout_report:
+        lines.append("Holdout disabled or insufficient data.")
+    else:
+        mode = holdout_report.get("mode", "single_ladder")
+        tb = holdout_report.get("train_best") or {}
+        tbase = holdout_report.get("train_baseline") or {}
+        hb = holdout_report.get("test_best") or {}
+        hbase = holdout_report.get("test_baseline") or {}
+        lines += [
+            f"- Mode: `{mode}`",
+            "",
+            "## Train",
+            f"- Best pnl={tb.get('pnl',0.0):.4f}, win_rate={tb.get('win_rate',0.0):.3f}",
+            f"- Baseline pnl={tbase.get('pnl',0.0):.4f}, win_rate={tbase.get('win_rate',0.0):.3f}",
+            "",
+            "## Holdout Test",
+            f"- Best(train-selected) pnl={hb.get('pnl',0.0):.4f}, win_rate={hb.get('win_rate',0.0):.3f}",
+            f"- Baseline pnl={hbase.get('pnl',0.0):.4f}, win_rate={hbase.get('win_rate',0.0):.3f}",
+        ]
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def write_live_recommendation_md(path: Path, recommendation: Dict) -> None:
@@ -557,6 +618,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     top = (report.get("top10") or [{}])[0]
     mode_cmp = report.get("mode_comparison") or {}
     live_reco = report.get("live_recommendation") or {}
+    holdout = report.get("holdout") or {}
 
     lines = []
     lines.append("# Backtest Run Summary")
@@ -599,6 +661,17 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     else:
         lines.append("- No eligible live recommendation under current guardrails.")
 
+    lines.append("")
+    lines.append("## Holdout robustness (single_ladder)")
+    lines.append("")
+    if holdout:
+        hb = holdout.get("test_best") or {}
+        hbase = holdout.get("test_baseline") or {}
+        lines.append(f"- Test best(train-selected): pnl={hb.get('pnl',0.0):.4f}, win_rate={hb.get('win_rate',0.0):.3f}, trades={hb.get('trades',0)}")
+        lines.append(f"- Test baseline: pnl={hbase.get('pnl',0.0):.4f}, win_rate={hbase.get('win_rate',0.0):.3f}, trades={hbase.get('trades',0)}")
+    else:
+        lines.append("- Holdout disabled or insufficient data.")
+
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -619,7 +692,10 @@ def main():
 
     snapshot = load_snapshot(snapshot_path)
 
-    leaderboard = run_mode_pass(snapshot, cfg)
+    holdout_fraction = cfg.get("validation", {}).get("holdout_fraction", 0.0)
+    train_snapshot, holdout_snapshot = split_snapshot(snapshot, holdout_fraction)
+
+    leaderboard = run_mode_pass(train_snapshot, cfg)
 
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     outdir = Path(args.outdir)
@@ -627,6 +703,21 @@ def main():
 
     comparison_payload = None
     comparison_csv = None
+    if args.compare_modes:
+        mode_payload = {}
+        for mode in ["all_trades", "single_ladder"]:
+            mode_board = run_mode_pass(train_snapshot, cfg, force_mode=mode)
+            mode_payload[mode] = {
+                "best": mode_board[0] if mode_board else None,
+                "baseline": next((x for x in mode_board if x["weights"] == cfg["weights"]), None),
+            }
+        comparison_payload = mode_payload
+        comparison_csv = outdir / f"backtest_{ts}_mode_compare.csv"
+        write_mode_comparison_csv(comparison_csv, mode_payload)
+
+    single_ladder_board = run_mode_pass(train_snapshot, cfg, force_mode="single_ladder")
+    live_recommendation = choose_live_recommendation(single_ladder_board)
+    holdout_report = evaluate_holdout(single_ladder_board, holdout_snapshot, cfg, mode="single_ladder")
 
     full_path = outdir / f"backtest_{ts}.json"
     with open(full_path, "w") as f:
@@ -634,10 +725,17 @@ def main():
             {
                 "timestamp_utc": ts,
                 "config": cfg,
+                "dataset": {
+                    "total_markets": len(snapshot),
+                    "train_markets": len(train_snapshot),
+                    "holdout_markets": len(holdout_snapshot),
+                    "holdout_fraction": holdout_fraction,
+                },
                 "top10": leaderboard[:10],
                 "baseline": next((x for x in leaderboard if x["weights"] == cfg["weights"]), None),
                 "all_results": leaderboard,
                 "mode_comparison": comparison_payload,
+                "holdout": holdout_report,
             },
             f,
             indent=2,
@@ -649,40 +747,27 @@ def main():
     write_leaderboard_csv(leaderboard_csv, leaderboard)
     write_category_csv(category_csv, leaderboard)
 
-    comparison_payload = None
-    comparison_csv = None
-    if args.compare_modes:
-        mode_payload = {}
-        for mode in ["all_trades", "single_ladder"]:
-            mode_board = run_mode_pass(snapshot, cfg, force_mode=mode)
-            mode_payload[mode] = {
-                "best": mode_board[0] if mode_board else None,
-                "baseline": next((x for x in mode_board if x["weights"] == cfg["weights"]), None),
-            }
-        comparison_payload = mode_payload
-        comparison_csv = outdir / f"backtest_{ts}_mode_compare.csv"
-        write_mode_comparison_csv(comparison_csv, mode_payload)
-
-    single_ladder_board = run_mode_pass(snapshot, cfg, force_mode="single_ladder")
-    live_recommendation = choose_live_recommendation(single_ladder_board)
-
     summary_report = {
         "timestamp_utc": ts,
         "top10": leaderboard[:10],
         "baseline": next((x for x in leaderboard if x["weights"] == cfg["weights"]), None),
         "mode_comparison": comparison_payload,
         "live_recommendation": live_recommendation,
+        "holdout": holdout_report,
     }
     write_run_summary_md(summary_md, summary_report)
 
     live_reco_md = outdir / f"backtest_{ts}_live_recommendation.md"
+    holdout_md = outdir / f"backtest_{ts}_holdout.md"
     write_live_recommendation_md(live_reco_md, live_recommendation)
+    write_holdout_md(holdout_md, holdout_report)
 
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
     print(f"Wrote category CSV: {category_csv}")
     print(f"Wrote summary MD: {summary_md}")
     print(f"Wrote live recommendation MD: {live_reco_md}")
+    print(f"Wrote holdout MD: {holdout_md}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
     if leaderboard:
