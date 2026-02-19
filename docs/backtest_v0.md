@@ -57,6 +57,11 @@ Set `execution.mode` in config:
 - `single_ladder` (live-like): one active ladder, 2^n progression on losses, reset on win.
 - `all_trades` (research): every candidate is simulated as independent step-0 trade to maximize sample size.
 
+Set `execution.max_concurrent_ladders` as a guardrail value:
+
+- In `single_ladder`, it must be `1` (enforced).
+- In `all_trades`, it can be >1 for research scenarios.
+
 ## Risk model notes
 
 - Bankroll starts at 1000 (configurable)
@@ -74,3 +79,8 @@ Each run now reports:
 - `max_loss_streak`
 - `max_ladder_depth`
 - `by_category` with trades/wins/pnl + `win_rate` + `avg_pnl`
+
+And writes companion CSVs for easier comparison/reporting:
+
+- `outputs/backtests/backtest_<timestamp>_leaderboard.csv`
+- `outputs/backtests/backtest_<timestamp>_categories.csv`

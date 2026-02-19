@@ -1,4 +1,5 @@
 import argparse
+import csv
 import hashlib
 import json
 import math
@@ -173,14 +174,27 @@ def enrich_category_summary(by_category: Dict[str, Dict]) -> Dict[str, Dict]:
     return out
 
 
+def validate_execution_config(exec_cfg: Dict) -> None:
+    mode = exec_cfg.get("mode", "single_ladder")
+    if mode not in {"single_ladder", "all_trades"}:
+        raise ValueError("execution.mode must be one of: single_ladder, all_trades")
+
+    max_ladders = int(exec_cfg.get("max_concurrent_ladders", 1))
+    if max_ladders < 1:
+        raise ValueError("execution.max_concurrent_ladders must be >= 1")
+
+    # Live-mode guardrail: one active ladder only.
+    if mode == "single_ladder" and max_ladders != 1:
+        raise ValueError("single_ladder mode requires execution.max_concurrent_ladders == 1")
+
+
 def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> Dict:
     seed = cfg["seed"]
     risk_cfg = cfg["risk"]
     exec_cfg = cfg["execution"]
 
+    validate_execution_config(exec_cfg)
     mode = exec_cfg.get("mode", "single_ladder")
-    if mode not in {"single_ladder", "all_trades"}:
-        raise ValueError("execution.mode must be one of: single_ladder, all_trades")
 
     bankroll = risk_cfg["starting_bankroll"]
     peak = bankroll
@@ -290,6 +304,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
     return {
         "weights": weights,
         "execution_mode": mode,
+        "max_concurrent_ladders": int(exec_cfg.get("max_concurrent_ladders", 1)),
         "trades": total,
         "wins": wins,
         "win_rate": (wins / total) if total else 0,
@@ -301,6 +316,70 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         "stop_reason": stop_reason,
         "by_category": enrich_category_summary(by_category),
     }
+
+
+def write_leaderboard_csv(path: Path, leaderboard: List[Dict]) -> None:
+    keys = ["market", "cross", "news", "reddit", "trader"]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "rank",
+                "execution_mode",
+                "max_concurrent_ladders",
+                "trades",
+                "wins",
+                "win_rate",
+                "pnl",
+                "ending_bankroll",
+                "max_drawdown",
+                "max_loss_streak",
+                "max_ladder_depth",
+                "stop_reason",
+                *[f"w_{k}" for k in keys],
+            ],
+        )
+        writer.writeheader()
+        for idx, row in enumerate(leaderboard, start=1):
+            out = {
+                "rank": idx,
+                "execution_mode": row["execution_mode"],
+                "max_concurrent_ladders": row.get("max_concurrent_ladders", 1),
+                "trades": row["trades"],
+                "wins": row["wins"],
+                "win_rate": row["win_rate"],
+                "pnl": row["pnl"],
+                "ending_bankroll": row["ending_bankroll"],
+                "max_drawdown": row["max_drawdown"],
+                "max_loss_streak": row["max_loss_streak"],
+                "max_ladder_depth": row["max_ladder_depth"],
+                "stop_reason": row["stop_reason"],
+            }
+            for k in keys:
+                out[f"w_{k}"] = row["weights"].get(k, 0.0)
+            writer.writerow(out)
+
+
+def write_category_csv(path: Path, leaderboard: List[Dict]) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["rank", "category", "trades", "wins", "win_rate", "pnl", "avg_pnl"],
+        )
+        writer.writeheader()
+        for idx, row in enumerate(leaderboard, start=1):
+            for cat, stats in sorted(row.get("by_category", {}).items()):
+                writer.writerow(
+                    {
+                        "rank": idx,
+                        "category": cat,
+                        "trades": stats["trades"],
+                        "wins": stats["wins"],
+                        "win_rate": stats["win_rate"],
+                        "pnl": stats["pnl"],
+                        "avg_pnl": stats["avg_pnl"],
+                    }
+                )
 
 
 def main():
@@ -351,7 +430,14 @@ def main():
             indent=2,
         )
 
+    leaderboard_csv = outdir / f"backtest_{ts}_leaderboard.csv"
+    category_csv = outdir / f"backtest_{ts}_categories.csv"
+    write_leaderboard_csv(leaderboard_csv, leaderboard)
+    write_category_csv(category_csv, leaderboard)
+
     print(f"Wrote report: {full_path}")
+    print(f"Wrote leaderboard CSV: {leaderboard_csv}")
+    print(f"Wrote category CSV: {category_csv}")
     if leaderboard:
         best = leaderboard[0]
         print(
