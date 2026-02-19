@@ -382,11 +382,72 @@ def write_category_csv(path: Path, leaderboard: List[Dict]) -> None:
                 )
 
 
+def run_mode_pass(snapshot: List[Dict], cfg: Dict, force_mode: str = None) -> List[Dict]:
+    cfg_local = json.loads(json.dumps(cfg))
+    if force_mode is not None:
+        exec_cfg = cfg_local.setdefault("execution", {})
+        exec_cfg["mode"] = force_mode
+        if force_mode == "single_ladder":
+            exec_cfg["max_concurrent_ladders"] = 1
+
+    variants = [cfg_local["weights"]]
+    if cfg_local.get("weight_sweep", {}).get("enabled", False):
+        variants = generate_weight_variants(
+            cfg_local["weights"],
+            step=cfg_local["weight_sweep"].get("step", 0.05),
+            max_variants=cfg_local["weight_sweep"].get("max_variants", 200),
+        )
+
+    leaderboard = []
+    for w in variants:
+        report = run_backtest(snapshot, cfg_local, w)
+        leaderboard.append(report)
+
+    leaderboard.sort(key=lambda x: (x["pnl"], x["win_rate"]), reverse=True)
+    return leaderboard
+
+
+def write_mode_comparison_csv(path: Path, by_mode: Dict[str, Dict]) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "mode",
+                "best_pnl",
+                "best_win_rate",
+                "best_trades",
+                "baseline_pnl",
+                "baseline_win_rate",
+                "baseline_trades",
+                "best_stop_reason",
+                "baseline_stop_reason",
+            ],
+        )
+        writer.writeheader()
+        for mode, payload in by_mode.items():
+            best = payload.get("best") or {}
+            baseline = payload.get("baseline") or {}
+            writer.writerow(
+                {
+                    "mode": mode,
+                    "best_pnl": best.get("pnl", 0.0),
+                    "best_win_rate": best.get("win_rate", 0.0),
+                    "best_trades": best.get("trades", 0),
+                    "baseline_pnl": baseline.get("pnl", 0.0),
+                    "baseline_win_rate": baseline.get("win_rate", 0.0),
+                    "baseline_trades": baseline.get("trades", 0),
+                    "best_stop_reason": best.get("stop_reason", ""),
+                    "baseline_stop_reason": baseline.get("stop_reason", ""),
+                }
+            )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Deterministic Polymarket backtest runner")
     parser.add_argument("--config", default="configs/backtest_v0.json")
     parser.add_argument("--refresh-snapshot", action="store_true")
     parser.add_argument("--outdir", default="outputs/backtests")
+    parser.add_argument("--compare-modes", action="store_true", help="Run both all_trades and single_ladder passes and write comparison output")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -397,24 +458,14 @@ def main():
 
     snapshot = load_snapshot(snapshot_path)
 
-    variants = [cfg["weights"]]
-    if cfg.get("weight_sweep", {}).get("enabled", False):
-        variants = generate_weight_variants(
-            cfg["weights"],
-            step=cfg["weight_sweep"].get("step", 0.05),
-            max_variants=cfg["weight_sweep"].get("max_variants", 200),
-        )
-
-    leaderboard = []
-    for w in variants:
-        report = run_backtest(snapshot, cfg, w)
-        leaderboard.append(report)
-
-    leaderboard.sort(key=lambda x: (x["pnl"], x["win_rate"]), reverse=True)
+    leaderboard = run_mode_pass(snapshot, cfg)
 
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+
+    comparison_payload = None
+    comparison_csv = None
 
     full_path = outdir / f"backtest_{ts}.json"
     with open(full_path, "w") as f:
@@ -425,6 +476,7 @@ def main():
                 "top10": leaderboard[:10],
                 "baseline": next((x for x in leaderboard if x["weights"] == cfg["weights"]), None),
                 "all_results": leaderboard,
+                "mode_comparison": comparison_payload,
             },
             f,
             indent=2,
@@ -435,9 +487,25 @@ def main():
     write_leaderboard_csv(leaderboard_csv, leaderboard)
     write_category_csv(category_csv, leaderboard)
 
+    comparison_payload = None
+    comparison_csv = None
+    if args.compare_modes:
+        mode_payload = {}
+        for mode in ["all_trades", "single_ladder"]:
+            mode_board = run_mode_pass(snapshot, cfg, force_mode=mode)
+            mode_payload[mode] = {
+                "best": mode_board[0] if mode_board else None,
+                "baseline": next((x for x in mode_board if x["weights"] == cfg["weights"]), None),
+            }
+        comparison_payload = mode_payload
+        comparison_csv = outdir / f"backtest_{ts}_mode_compare.csv"
+        write_mode_comparison_csv(comparison_csv, mode_payload)
+
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
     print(f"Wrote category CSV: {category_csv}")
+    if comparison_csv:
+        print(f"Wrote mode comparison CSV: {comparison_csv}")
     if leaderboard:
         best = leaderboard[0]
         print(
