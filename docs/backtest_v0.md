@@ -26,6 +26,12 @@ Refresh the snapshot explicitly:
 python3 scripts/python/backtest_runner.py --config configs/backtest_v0.json --refresh-snapshot
 ```
 
+Run with mode comparison (all_trades vs single_ladder in one pass):
+
+```bash
+python3 scripts/python/backtest_runner.py --config configs/backtest_v0.json --compare-modes
+```
+
 ## Current baseline in config
 
 Weights are ordered as:
@@ -84,3 +90,4 @@ And writes companion CSVs for easier comparison/reporting:
 
 - `outputs/backtests/backtest_<timestamp>_leaderboard.csv`
 - `outputs/backtests/backtest_<timestamp>_categories.csv`
+- `outputs/backtests/backtest_<timestamp>_mode_compare.csv` (when `--compare-modes` is used)
