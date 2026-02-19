@@ -3,11 +3,10 @@ import hashlib
 import json
 import math
 import os
-import random
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -151,7 +150,27 @@ def generate_weight_variants(base: Dict[str, float], step: float = 0.05, max_var
 
 
 def ladder_k_max(bankroll: float, ru: float, alpha: float) -> int:
-    return math.floor(math.log2((alpha * bankroll) / ru + 1.0)) - 1
+    return max(0, math.floor(math.log2((alpha * bankroll) / ru + 1.0)) - 1)
+
+
+def compute_outcome(market: Dict, implied: float, p_hat: float, side: str, seed: int) -> bool:
+    latent = clip(0.6 * p_hat + 0.4 * implied)
+    u = hash_to_unit(f"{seed}:{market.get('id')}:outcome")
+    yes_wins = u < latent
+    return yes_wins if side == "BUY_YES" else (not yes_wins)
+
+
+def enrich_category_summary(by_category: Dict[str, Dict]) -> Dict[str, Dict]:
+    out = {}
+    for cat, stats in by_category.items():
+        trades = stats["trades"]
+        wins = stats["wins"]
+        out[cat] = {
+            **stats,
+            "win_rate": (wins / trades) if trades else 0.0,
+            "avg_pnl": (stats["pnl"] / trades) if trades else 0.0,
+        }
+    return out
 
 
 def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> Dict:
@@ -159,12 +178,21 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
     risk_cfg = cfg["risk"]
     exec_cfg = cfg["execution"]
 
+    mode = exec_cfg.get("mode", "single_ladder")
+    if mode not in {"single_ladder", "all_trades"}:
+        raise ValueError("execution.mode must be one of: single_ladder, all_trades")
+
     bankroll = risk_cfg["starting_bankroll"]
     peak = bankroll
     daily_start = bankroll
     ru = bankroll * risk_cfg["risk_unit_pct"]
     alpha = risk_cfg["capital_utilization"]
-    k = 0
+
+    ladder_step = 0
+    current_loss_streak = 0
+    max_loss_streak = 0
+    max_ladder_depth = 0
+    stop_reason = "completed"
 
     results: List[TradeResult] = []
     by_category = {}
@@ -176,12 +204,17 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         if not candidate_filter(market, implied, cfg):
             continue
 
+        # In all_trades mode each market is an independent step-0 trade.
+        step_for_trade = ladder_step if mode == "single_ladder" else 0
+
         k_max = ladder_k_max(bankroll, ru, alpha)
-        if k > k_max:
+        if step_for_trade > k_max:
+            stop_reason = "capacity_limit"
             break
 
-        risk_amount = ru * (2**k)
+        risk_amount = ru * (2**step_for_trade)
         if risk_amount > alpha * bankroll:
+            stop_reason = "risk_cap"
             break
 
         signals = synth_signals(market, implied, seed)
@@ -196,11 +229,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         if price <= 0:
             continue
 
-        # Synthetic outcome generation (deterministic from hash)
-        latent = clip(0.6 * p_hat + 0.4 * implied)
-        u = hash_to_unit(f"{seed}:{market.get('id')}:outcome")
-        yes_wins = u < latent
-        won = yes_wins if side == "BUY_YES" else (not yes_wins)
+        won = compute_outcome(market, implied, p_hat, side, seed)
 
         shares = risk_amount / price
         gross = shares * ((1 - price) if won else -price)
@@ -213,19 +242,25 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         peak = max(peak, bankroll)
 
         if won:
-            k = 0
-            if not risk_cfg.get("freeze_ru_within_ladder", True):
-                ru = bankroll * risk_cfg["risk_unit_pct"]
+            current_loss_streak = 0
+            if mode == "single_ladder":
+                ladder_step = 0
+                if risk_cfg.get("freeze_ru_within_ladder", True):
+                    ru = bankroll * risk_cfg["risk_unit_pct"]
         else:
-            k += 1
-
-        # On reset conditions, recalc RU
-        if won and risk_cfg.get("freeze_ru_within_ladder", True):
-            ru = bankroll * risk_cfg["risk_unit_pct"]
+            current_loss_streak += 1
+            max_loss_streak = max(max_loss_streak, current_loss_streak)
+            if mode == "single_ladder":
+                ladder_step += 1
+                max_ladder_depth = max(max_ladder_depth, ladder_step)
 
         dd = (peak - bankroll) / peak if peak > 0 else 0
         day_loss = (daily_start - bankroll) / daily_start if daily_start > 0 else 0
-        if dd >= risk_cfg["max_drawdown"] or day_loss >= risk_cfg["daily_loss_cap"]:
+        if dd >= risk_cfg["max_drawdown"]:
+            stop_reason = "max_drawdown"
+            break
+        if day_loss >= risk_cfg["daily_loss_cap"]:
+            stop_reason = "daily_loss_cap"
             break
 
         cat = category_of(market)
@@ -254,13 +289,17 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
 
     return {
         "weights": weights,
+        "execution_mode": mode,
         "trades": total,
         "wins": wins,
         "win_rate": (wins / total) if total else 0,
         "pnl": total_pnl,
         "ending_bankroll": bankroll,
         "max_drawdown": max_dd,
-        "by_category": by_category,
+        "max_loss_streak": max_loss_streak,
+        "max_ladder_depth": max_ladder_depth,
+        "stop_reason": stop_reason,
+        "by_category": enrich_category_summary(by_category),
     }
 
 
@@ -315,7 +354,18 @@ def main():
     print(f"Wrote report: {full_path}")
     if leaderboard:
         best = leaderboard[0]
-        print("Best:", best["weights"], "pnl=", round(best["pnl"], 4), "win_rate=", round(best["win_rate"], 4), "trades=", best["trades"])
+        print(
+            "Best:",
+            best["weights"],
+            "pnl=",
+            round(best["pnl"], 4),
+            "win_rate=",
+            round(best["win_rate"], 4),
+            "trades=",
+            best["trades"],
+            "mode=",
+            best["execution_mode"],
+        )
 
 
 if __name__ == "__main__":
