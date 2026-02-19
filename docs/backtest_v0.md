@@ -50,11 +50,27 @@ Baseline:
 
 The runner includes this baseline in the experiment output and runs a weight sweep for alternatives.
 
+## Execution modes
+
+Set `execution.mode` in config:
+
+- `single_ladder` (live-like): one active ladder, 2^n progression on losses, reset on win.
+- `all_trades` (research): every candidate is simulated as independent step-0 trade to maximize sample size.
+
 ## Risk model notes
 
 - Bankroll starts at 1000 (configurable)
 - RU defaults to `risk_unit_pct * bankroll`
 - RU is frozen inside a ladder and recalculated on ladder reset
-- Ladder uses `2^n` sizing after losses
+- Ladder uses `2^n` sizing after losses (`single_ladder` mode)
 - Capacity cap uses `alpha`
 - Stops on max drawdown / daily loss cap
+
+## Output diagnostics
+
+Each run now reports:
+
+- `stop_reason` (completed, capacity_limit, risk_cap, max_drawdown, daily_loss_cap)
+- `max_loss_streak`
+- `max_ladder_depth`
+- `by_category` with trades/wins/pnl + `win_rate` + `avg_pnl`

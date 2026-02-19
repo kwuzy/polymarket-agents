@@ -15,7 +15,7 @@
     "freeze_ru_within_ladder": true
   },
   "execution": {
-    "mode": "all",
+    "mode": "all_trades",
     "fee_bps": 0,
     "slippage_bps": 0
   },
