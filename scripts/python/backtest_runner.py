@@ -222,8 +222,8 @@ def enrich_category_summary(by_category: Dict[str, Dict]) -> Dict[str, Dict]:
 
 def validate_execution_config(exec_cfg: Dict) -> None:
     mode = exec_cfg.get("mode", "single_ladder")
-    if mode not in {"single_ladder", "all_trades"}:
-        raise ValueError("execution.mode must be one of: single_ladder, all_trades")
+    if mode not in {"single_ladder", "all_trades", "multi_line"}:
+        raise ValueError("execution.mode must be one of: single_ladder, all_trades, multi_line")
 
     max_ladders = int(exec_cfg.get("max_concurrent_ladders", 1))
     if max_ladders < 1:
@@ -233,6 +233,10 @@ def validate_execution_config(exec_cfg: Dict) -> None:
     if mode == "single_ladder" and max_ladders != 1:
         raise ValueError("single_ladder mode requires execution.max_concurrent_ladders == 1")
 
+    num_lines = int(exec_cfg.get("num_lines", 1))
+    if num_lines < 1:
+        raise ValueError("execution.num_lines must be >= 1")
+
 
 def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> Dict:
     seed = cfg["seed"]
@@ -241,6 +245,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
 
     validate_execution_config(exec_cfg)
     mode = exec_cfg.get("mode", "single_ladder")
+    num_lines = int(exec_cfg.get("num_lines", 1))
 
     bankroll = risk_cfg["starting_bankroll"]
     peak = bankroll
@@ -254,6 +259,20 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
     max_ladder_depth = 0
     stop_reason = "completed"
 
+    # multi_line mode: independent line states and bankroll buckets
+    line_bankrolls = []
+    line_rus = []
+    line_steps = []
+    line_peaks = []
+    line_loss_streaks = []
+    if mode == "multi_line":
+        per_line = bankroll / num_lines
+        line_bankrolls = [per_line for _ in range(num_lines)]
+        line_rus = [per_line * risk_cfg["risk_unit_pct"] for _ in range(num_lines)]
+        line_steps = [0 for _ in range(num_lines)]
+        line_peaks = [per_line for _ in range(num_lines)]
+        line_loss_streaks = [0 for _ in range(num_lines)]
+
     results: List[TradeResult] = []
     by_category = {}
     diagnostics = {
@@ -266,7 +285,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
 
     ordered = sorted(snapshot, key=lambda m: int(m.get("id", 0)))
 
-    for market in ordered:
+    for i, market in enumerate(ordered):
         diagnostics["total_markets"] += 1
         implied = parse_implied_prob(market)
         if not candidate_filter(market, implied, cfg):
@@ -274,16 +293,31 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
             continue
         diagnostics["candidate_markets"] += 1
 
-        # In all_trades mode each market is an independent step-0 trade.
-        step_for_trade = ladder_step if mode == "single_ladder" else 0
+        if mode == "single_ladder":
+            active_bankroll = bankroll
+            active_ru = ru
+            step_for_trade = ladder_step
+        elif mode == "all_trades":
+            active_bankroll = bankroll
+            active_ru = ru
+            step_for_trade = 0
+        else:  # multi_line
+            line_idx = i % num_lines
+            active_bankroll = line_bankrolls[line_idx]
+            active_ru = line_rus[line_idx]
+            step_for_trade = line_steps[line_idx]
 
-        k_max = ladder_k_max(bankroll, ru, alpha)
+        k_max = ladder_k_max(active_bankroll, active_ru, alpha)
         if step_for_trade > k_max:
+            if mode == "multi_line":
+                continue
             stop_reason = "capacity_limit"
             break
 
-        risk_amount = ru * (2**step_for_trade)
-        if risk_amount > alpha * bankroll:
+        risk_amount = active_ru * (2**step_for_trade)
+        if risk_amount > alpha * active_bankroll:
+            if mode == "multi_line":
+                continue
             stop_reason = "risk_cap"
             break
 
@@ -310,21 +344,37 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         slippage = abs(gross) * (exec_cfg.get("slippage_bps", 0) / 10_000)
         pnl = gross - fee - slippage
 
-        bankroll += pnl
-        peak = max(peak, bankroll)
-
-        if won:
-            current_loss_streak = 0
-            if mode == "single_ladder":
-                ladder_step = 0
+        if mode == "multi_line":
+            line_bankrolls[line_idx] += pnl
+            line_peaks[line_idx] = max(line_peaks[line_idx], line_bankrolls[line_idx])
+            if won:
+                line_loss_streaks[line_idx] = 0
+                line_steps[line_idx] = 0
                 if risk_cfg.get("freeze_ru_within_ladder", True):
-                    ru = bankroll * risk_cfg["risk_unit_pct"]
+                    line_rus[line_idx] = line_bankrolls[line_idx] * risk_cfg["risk_unit_pct"]
+            else:
+                line_loss_streaks[line_idx] += 1
+                max_loss_streak = max(max_loss_streak, line_loss_streaks[line_idx])
+                line_steps[line_idx] += 1
+                max_ladder_depth = max(max_ladder_depth, line_steps[line_idx])
+            bankroll = sum(line_bankrolls)
+            peak = max(peak, bankroll)
         else:
-            current_loss_streak += 1
-            max_loss_streak = max(max_loss_streak, current_loss_streak)
-            if mode == "single_ladder":
-                ladder_step += 1
-                max_ladder_depth = max(max_ladder_depth, ladder_step)
+            bankroll += pnl
+            peak = max(peak, bankroll)
+
+            if won:
+                current_loss_streak = 0
+                if mode == "single_ladder":
+                    ladder_step = 0
+                    if risk_cfg.get("freeze_ru_within_ladder", True):
+                        ru = bankroll * risk_cfg["risk_unit_pct"]
+            else:
+                current_loss_streak += 1
+                max_loss_streak = max(max_loss_streak, current_loss_streak)
+                if mode == "single_ladder":
+                    ladder_step += 1
+                    max_ladder_depth = max(max_ladder_depth, ladder_step)
 
         dd = (peak - bankroll) / peak if peak > 0 else 0
         day_loss = (daily_start - bankroll) / daily_start if daily_start > 0 else 0
@@ -359,7 +409,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
     total_pnl = sum(r.pnl for r in results)
     max_dd = (peak - bankroll) / peak if peak > 0 else 0
 
-    return {
+    out = {
         "weights": weights,
         "execution_mode": mode,
         "max_concurrent_ladders": int(exec_cfg.get("max_concurrent_ladders", 1)),
@@ -379,6 +429,13 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
             "execution_rate": (total / diagnostics["candidate_markets"]) if diagnostics["candidate_markets"] else 0.0,
         },
     }
+    if mode == "multi_line":
+        out["line_summary"] = {
+            "num_lines": num_lines,
+            "line_bankrolls": line_bankrolls,
+            "line_steps": line_steps,
+        }
+    return out
 
 
 def write_leaderboard_csv(path: Path, leaderboard: List[Dict]) -> None:
