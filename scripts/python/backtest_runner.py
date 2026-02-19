@@ -564,6 +564,8 @@ def write_mode_comparison_csv(path: Path, by_mode: Dict[str, Dict]) -> None:
                 "baseline_trades",
                 "best_stop_reason",
                 "baseline_stop_reason",
+                "best_num_lines",
+                "baseline_num_lines",
             ],
         )
         writer.writeheader()
@@ -581,6 +583,8 @@ def write_mode_comparison_csv(path: Path, by_mode: Dict[str, Dict]) -> None:
                     "baseline_trades": baseline.get("trades", 0),
                     "best_stop_reason": best.get("stop_reason", ""),
                     "baseline_stop_reason": baseline.get("stop_reason", ""),
+                    "best_num_lines": ((best.get("line_summary") or {}).get("num_lines", 1)),
+                    "baseline_num_lines": ((baseline.get("line_summary") or {}).get("num_lines", 1)),
                 }
             )
 
@@ -716,6 +720,28 @@ def write_cost_scenarios_md(path: Path, scenarios: List[Dict]) -> None:
             lines.append(
                 f"- {s.get('label')}: fee={s.get('fee_bps')}bps, slip={s.get('slippage_bps')}bps | baseline_pnl={b.get('pnl',0.0):.4f}, recommended_pnl={r.get('pnl',0.0):.4f}, delta={delta:.4f}"
             )
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def write_multiline_md(path: Path, baseline_multi: Dict) -> None:
+    lines = ["# Multi-line Diagnostics", ""]
+    if not baseline_multi:
+        lines.append("No multi-line baseline result available.")
+    else:
+        ls = baseline_multi.get("line_summary") or {}
+        lines.append(f"- num_lines={ls.get('num_lines', 0)}")
+        lines.append(f"- baseline_pnl={baseline_multi.get('pnl',0.0):.4f}")
+        lines.append(f"- baseline_win_rate={baseline_multi.get('win_rate',0.0):.3f}")
+        lines.append(f"- baseline_trades={baseline_multi.get('trades',0)}")
+        banks = ls.get("line_bankrolls", [])
+        steps = ls.get("line_steps", [])
+        if banks:
+            lines.append("")
+            lines.append("## Per-line ending bankrolls")
+            for i, b in enumerate(banks, start=1):
+                st = steps[i-1] if i-1 < len(steps) else 0
+                lines.append(f"- line_{i}: bankroll={b:.4f}, ladder_step={st}")
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -928,6 +954,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     holdout = report.get("holdout") or {}
     cost_scenarios = report.get("cost_scenarios") or []
     fold_robustness = report.get("fold_robustness") or []
+    multi_line_baseline = report.get("multi_line_baseline") or {}
 
     lines = []
     lines.append("# Backtest Run Summary")
@@ -947,7 +974,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     if mode_cmp:
         lines.append("## Mode comparison")
         lines.append("")
-        for mode in ["all_trades", "single_ladder"]:
+        for mode in ["all_trades", "single_ladder", "multi_line"]:
             payload = mode_cmp.get(mode) or {}
             best = payload.get("best") or {}
             base = payload.get("baseline") or {}
@@ -1013,6 +1040,16 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     else:
         lines.append("- Fold validation disabled or insufficient data.")
 
+    lines.append("")
+    lines.append("## Multi-line baseline")
+    lines.append("")
+    if multi_line_baseline:
+        lines.append(f"- pnl={multi_line_baseline.get('pnl',0.0):.4f}, win_rate={multi_line_baseline.get('win_rate',0.0):.3f}, trades={multi_line_baseline.get('trades',0)}")
+        ls = multi_line_baseline.get("line_summary") or {}
+        lines.append(f"- num_lines={ls.get('num_lines',0)}")
+    else:
+        lines.append("- No multi-line baseline result available.")
+
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -1046,7 +1083,7 @@ def main():
     comparison_csv = None
     if args.compare_modes:
         mode_payload = {}
-        for mode in ["all_trades", "single_ladder"]:
+        for mode in ["all_trades", "single_ladder", "multi_line"]:
             mode_board = run_mode_pass(train_snapshot, cfg, force_mode=mode)
             mode_payload[mode] = {
                 "best": mode_board[0] if mode_board else None,
@@ -1057,6 +1094,9 @@ def main():
         write_mode_comparison_csv(comparison_csv, mode_payload)
 
     single_ladder_board = run_mode_pass(train_snapshot, cfg, force_mode="single_ladder")
+    multi_line_board = run_mode_pass(train_snapshot, cfg, force_mode="multi_line")
+    multi_line_baseline = next((x for x in multi_line_board if x["weights"] == cfg["weights"]), None)
+
     live_recommendation = choose_live_recommendation(single_ladder_board)
     holdout_report = evaluate_holdout(single_ladder_board, holdout_snapshot, cfg, mode="single_ladder")
 
@@ -1095,6 +1135,7 @@ def main():
                 "holdout": holdout_report,
                 "cost_scenarios": cost_scenarios,
                 "fold_robustness": fold_robustness,
+                "multi_line_baseline": multi_line_baseline,
             },
             f,
             indent=2,
@@ -1115,6 +1156,7 @@ def main():
         "holdout": holdout_report,
         "cost_scenarios": cost_scenarios,
         "fold_robustness": fold_robustness,
+        "multi_line_baseline": multi_line_baseline,
     }
     write_run_summary_md(summary_md, summary_report)
 
@@ -1124,6 +1166,7 @@ def main():
     cost_md = outdir / f"backtest_{ts}_cost_scenarios.md"
     fold_csv = outdir / f"backtest_{ts}_fold_robustness.csv"
     fold_md = outdir / f"backtest_{ts}_fold_robustness.md"
+    multiline_md = outdir / f"backtest_{ts}_multiline.md"
     data_quality_md = outdir / f"backtest_{ts}_data_quality.md"
     write_live_recommendation_md(live_reco_md, live_recommendation)
     write_holdout_md(holdout_md, holdout_report)
@@ -1131,6 +1174,7 @@ def main():
     write_cost_scenarios_md(cost_md, cost_scenarios)
     write_fold_robustness_csv(fold_csv, fold_robustness)
     write_fold_robustness_md(fold_md, fold_robustness)
+    write_multiline_md(multiline_md, multi_line_baseline)
     write_data_quality_md(data_quality_md, dataset_meta, baseline_result, holdout_report)
 
     print(f"Wrote report: {full_path}")
@@ -1143,6 +1187,7 @@ def main():
     print(f"Wrote cost scenarios MD: {cost_md}")
     print(f"Wrote fold robustness CSV: {fold_csv}")
     print(f"Wrote fold robustness MD: {fold_md}")
+    print(f"Wrote multi-line MD: {multiline_md}")
     print(f"Wrote data quality MD: {data_quality_md}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
