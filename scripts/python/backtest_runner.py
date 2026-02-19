@@ -256,13 +256,23 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
 
     results: List[TradeResult] = []
     by_category = {}
+    diagnostics = {
+        "total_markets": 0,
+        "candidate_markets": 0,
+        "skipped_filter": 0,
+        "skipped_no_edge": 0,
+        "skipped_invalid_price": 0,
+    }
 
     ordered = sorted(snapshot, key=lambda m: int(m.get("id", 0)))
 
     for market in ordered:
+        diagnostics["total_markets"] += 1
         implied = parse_implied_prob(market)
         if not candidate_filter(market, implied, cfg):
+            diagnostics["skipped_filter"] += 1
             continue
+        diagnostics["candidate_markets"] += 1
 
         # In all_trades mode each market is an independent step-0 trade.
         step_for_trade = ladder_step if mode == "single_ladder" else 0
@@ -281,12 +291,14 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         p_hat = weighted_prob(signals, weights)
 
         if p_hat == implied:
+            diagnostics["skipped_no_edge"] += 1
             continue
 
         side = "BUY_YES" if p_hat > implied else "BUY_NO"
         price = implied if side == "BUY_YES" else 1 - implied
         edge = abs(p_hat - implied)
         if price <= 0:
+            diagnostics["skipped_invalid_price"] += 1
             continue
 
         won = compute_outcome(market, implied, p_hat, side, seed)
@@ -361,6 +373,11 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         "max_ladder_depth": max_ladder_depth,
         "stop_reason": stop_reason,
         "by_category": enrich_category_summary(by_category),
+        "diagnostics": {
+            **diagnostics,
+            "executed_trades": total,
+            "execution_rate": (total / diagnostics["candidate_markets"]) if diagnostics["candidate_markets"] else 0.0,
+        },
     }
 
 
@@ -630,6 +647,40 @@ def write_cost_scenarios_md(path: Path, scenarios: List[Dict]) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+def write_data_quality_md(path: Path, dataset_meta: Dict, baseline: Dict, holdout: Dict) -> None:
+    lines = ["# Data Quality Diagnostics", ""]
+    lines.append(
+        f"- Dataset split: total={dataset_meta.get('total_markets',0)}, train={dataset_meta.get('train_markets',0)}, holdout={dataset_meta.get('holdout_markets',0)}"
+    )
+    lines.append("")
+
+    bdiag = (baseline or {}).get("diagnostics") or {}
+    lines.append("## Train baseline diagnostics")
+    lines.append(f"- candidate_markets={bdiag.get('candidate_markets',0)}")
+    lines.append(f"- executed_trades={bdiag.get('executed_trades',0)}")
+    lines.append(f"- execution_rate={bdiag.get('execution_rate',0.0):.3f}")
+    lines.append(f"- skipped_filter={bdiag.get('skipped_filter',0)}")
+    lines.append(f"- skipped_no_edge={bdiag.get('skipped_no_edge',0)}")
+    lines.append("")
+
+    if holdout:
+        hb = holdout.get("test_baseline") or {}
+        hdiag = hb.get("diagnostics") or {}
+        lines.append("## Holdout baseline diagnostics")
+        lines.append(f"- candidate_markets={hdiag.get('candidate_markets',0)}")
+        lines.append(f"- executed_trades={hdiag.get('executed_trades',0)}")
+        lines.append(f"- execution_rate={hdiag.get('execution_rate',0.0):.3f}")
+        lines.append(f"- skipped_filter={hdiag.get('skipped_filter',0)}")
+        lines.append(f"- skipped_no_edge={hdiag.get('skipped_no_edge',0)}")
+
+        if hdiag.get("executed_trades", 0) == 0:
+            lines.append("")
+            lines.append("⚠️ Warning: holdout baseline produced zero trades; treat robustness conclusions as low confidence.")
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def choose_live_recommendation(results: List[Dict]) -> Dict:
     """Pick a guardrail-aware profile from single_ladder results.
 
@@ -762,6 +813,8 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
         hbase = holdout.get("test_baseline") or {}
         lines.append(f"- Test best(train-selected): pnl={hb.get('pnl',0.0):.4f}, win_rate={hb.get('win_rate',0.0):.3f}, trades={hb.get('trades',0)}")
         lines.append(f"- Test baseline: pnl={hbase.get('pnl',0.0):.4f}, win_rate={hbase.get('win_rate',0.0):.3f}, trades={hbase.get('trades',0)}")
+        if hbase.get('trades', 0) == 0:
+            lines.append("- ⚠️ Holdout has zero baseline trades; robustness signal is weak.")
     else:
         lines.append("- Holdout disabled or insufficient data.")
 
@@ -836,20 +889,23 @@ def main():
         mode="single_ladder",
     )
 
+    dataset_meta = {
+        "total_markets": len(snapshot),
+        "train_markets": len(train_snapshot),
+        "holdout_markets": len(holdout_snapshot),
+        "holdout_fraction": holdout_fraction,
+    }
+    baseline_result = next((x for x in leaderboard if x["weights"] == cfg["weights"]), None)
+
     full_path = outdir / f"backtest_{ts}.json"
     with open(full_path, "w") as f:
         json.dump(
             {
                 "timestamp_utc": ts,
                 "config": cfg,
-                "dataset": {
-                    "total_markets": len(snapshot),
-                    "train_markets": len(train_snapshot),
-                    "holdout_markets": len(holdout_snapshot),
-                    "holdout_fraction": holdout_fraction,
-                },
+                "dataset": dataset_meta,
                 "top10": leaderboard[:10],
-                "baseline": next((x for x in leaderboard if x["weights"] == cfg["weights"]), None),
+                "baseline": baseline_result,
                 "all_results": leaderboard,
                 "mode_comparison": comparison_payload,
                 "holdout": holdout_report,
@@ -868,7 +924,7 @@ def main():
     summary_report = {
         "timestamp_utc": ts,
         "top10": leaderboard[:10],
-        "baseline": next((x for x in leaderboard if x["weights"] == cfg["weights"]), None),
+        "baseline": baseline_result,
         "mode_comparison": comparison_payload,
         "live_recommendation": live_recommendation,
         "holdout": holdout_report,
@@ -880,10 +936,12 @@ def main():
     holdout_md = outdir / f"backtest_{ts}_holdout.md"
     cost_csv = outdir / f"backtest_{ts}_cost_scenarios.csv"
     cost_md = outdir / f"backtest_{ts}_cost_scenarios.md"
+    data_quality_md = outdir / f"backtest_{ts}_data_quality.md"
     write_live_recommendation_md(live_reco_md, live_recommendation)
     write_holdout_md(holdout_md, holdout_report)
     write_cost_scenarios_csv(cost_csv, cost_scenarios)
     write_cost_scenarios_md(cost_md, cost_scenarios)
+    write_data_quality_md(data_quality_md, dataset_meta, baseline_result, holdout_report)
 
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
@@ -893,6 +951,7 @@ def main():
     print(f"Wrote holdout MD: {holdout_md}")
     print(f"Wrote cost scenarios CSV: {cost_csv}")
     print(f"Wrote cost scenarios MD: {cost_md}")
+    print(f"Wrote data quality MD: {data_quality_md}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
     if leaderboard:
