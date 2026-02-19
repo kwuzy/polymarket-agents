@@ -237,6 +237,10 @@ def validate_execution_config(exec_cfg: Dict) -> None:
     if num_lines < 1:
         raise ValueError("execution.num_lines must be >= 1")
 
+    assignment = exec_cfg.get("line_assignment", "round_robin")
+    if assignment not in {"round_robin", "market_hash"}:
+        raise ValueError("execution.line_assignment must be one of: round_robin, market_hash")
+
 
 def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> Dict:
     seed = cfg["seed"]
@@ -265,6 +269,8 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
     line_steps = []
     line_peaks = []
     line_loss_streaks = []
+    line_assignment = exec_cfg.get("line_assignment", "round_robin")
+
     if mode == "multi_line":
         per_line = bankroll / num_lines
         line_bankrolls = [per_line for _ in range(num_lines)]
@@ -302,7 +308,10 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
             active_ru = ru
             step_for_trade = 0
         else:  # multi_line
-            line_idx = i % num_lines
+            if line_assignment == "market_hash":
+                line_idx = int(hash_to_unit(f"line:{market.get('id')}") * num_lines) % num_lines
+            else:
+                line_idx = i % num_lines
             active_bankroll = line_bankrolls[line_idx]
             active_ru = line_rus[line_idx]
             step_for_trade = line_steps[line_idx]
@@ -432,6 +441,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
     if mode == "multi_line":
         out["line_summary"] = {
             "num_lines": num_lines,
+            "line_assignment": line_assignment,
             "line_bankrolls": line_bankrolls,
             "line_steps": line_steps,
         }
@@ -566,6 +576,8 @@ def write_mode_comparison_csv(path: Path, by_mode: Dict[str, Dict]) -> None:
                 "baseline_stop_reason",
                 "best_num_lines",
                 "baseline_num_lines",
+                "best_line_assignment",
+                "baseline_line_assignment",
             ],
         )
         writer.writeheader()
@@ -585,6 +597,8 @@ def write_mode_comparison_csv(path: Path, by_mode: Dict[str, Dict]) -> None:
                     "baseline_stop_reason": baseline.get("stop_reason", ""),
                     "best_num_lines": ((best.get("line_summary") or {}).get("num_lines", 1)),
                     "baseline_num_lines": ((baseline.get("line_summary") or {}).get("num_lines", 1)),
+                    "best_line_assignment": ((best.get("line_summary") or {}).get("line_assignment", "")),
+                    "baseline_line_assignment": ((baseline.get("line_summary") or {}).get("line_assignment", "")),
                 }
             )
 
@@ -731,6 +745,7 @@ def write_multiline_md(path: Path, baseline_multi: Dict) -> None:
     else:
         ls = baseline_multi.get("line_summary") or {}
         lines.append(f"- num_lines={ls.get('num_lines', 0)}")
+        lines.append(f"- assignment={ls.get('line_assignment', 'round_robin')}")
         lines.append(f"- baseline_pnl={baseline_multi.get('pnl',0.0):.4f}")
         lines.append(f"- baseline_win_rate={baseline_multi.get('win_rate',0.0):.3f}")
         lines.append(f"- baseline_trades={baseline_multi.get('trades',0)}")

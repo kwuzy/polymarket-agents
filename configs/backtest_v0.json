@@ -18,6 +18,7 @@
     "mode": "all_trades",
     "max_concurrent_ladders": 4,
     "num_lines": 10,
+    "line_assignment": "round_robin",
     "fee_bps": 0,
     "slippage_bps": 0
   },
