@@ -16,6 +16,7 @@
   },
   "execution": {
     "mode": "all_trades",
+    "max_concurrent_ladders": 4,
     "fee_bps": 0,
     "slippage_bps": 0
   },
