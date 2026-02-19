@@ -502,10 +502,61 @@ def _top_category_rows(by_category: Dict[str, Dict], top_n: int = 8) -> List[str
     return out
 
 
+def choose_live_recommendation(results: List[Dict]) -> Dict:
+    """Pick a guardrail-aware profile from single_ladder results.
+
+    Score favors positive pnl with lower drawdown and lower loss-streak risk.
+    """
+    if not results:
+        return None
+
+    eligible = [
+        r
+        for r in results
+        if r.get("execution_mode") == "single_ladder"
+        and r.get("trades", 0) >= 5
+        and r.get("win_rate", 0.0) >= 0.40
+        and r.get("max_drawdown", 1.0) <= 0.20
+    ]
+    if not eligible:
+        return None
+
+    def score(r: Dict) -> float:
+        pnl = float(r.get("pnl", 0.0))
+        dd = float(r.get("max_drawdown", 0.0))
+        streak = float(r.get("max_loss_streak", 0.0))
+        return pnl - (dd * 2.0) - (streak * 0.02)
+
+    return sorted(eligible, key=score, reverse=True)[0]
+
+
+def write_live_recommendation_md(path: Path, recommendation: Dict) -> None:
+    lines = ["# Live Profile Recommendation", ""]
+    if not recommendation:
+        lines.append("No eligible recommendation found under current guardrails.")
+    else:
+        lines.extend(
+            [
+                "Selected from `single_ladder` results using guardrail-aware score.",
+                "",
+                f"- Weights: `{recommendation.get('weights', {})}`",
+                f"- pnl={recommendation.get('pnl',0.0):.4f}",
+                f"- win_rate={recommendation.get('win_rate',0.0):.3f}",
+                f"- trades={recommendation.get('trades',0)}",
+                f"- max_drawdown={recommendation.get('max_drawdown',0.0):.3f}",
+                f"- max_loss_streak={recommendation.get('max_loss_streak',0)}",
+                f"- stop_reason={recommendation.get('stop_reason','')}",
+            ]
+        )
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def write_run_summary_md(path: Path, report: Dict) -> None:
     baseline = report.get("baseline") or {}
     top = (report.get("top10") or [{}])[0]
     mode_cmp = report.get("mode_comparison") or {}
+    live_reco = report.get("live_recommendation") or {}
 
     lines = []
     lines.append("# Backtest Run Summary")
@@ -537,6 +588,16 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     lines.append("## Baseline category/regime snapshot")
     lines.append("")
     lines.extend(_top_category_rows(baseline.get("by_category", {}), top_n=10) or ["- no categories captured"])
+    lines.append("")
+
+    lines.append("## Suggested live profile (guardrail-aware)")
+    lines.append("")
+    if live_reco:
+        lines.append(f"- Weights: `{live_reco.get('weights', {})}`")
+        lines.append(f"- pnl={live_reco.get('pnl',0.0):.4f}, win_rate={live_reco.get('win_rate',0.0):.3f}, trades={live_reco.get('trades',0)}")
+        lines.append(f"- max_drawdown={live_reco.get('max_drawdown',0.0):.3f}, max_loss_streak={live_reco.get('max_loss_streak',0)}")
+    else:
+        lines.append("- No eligible live recommendation under current guardrails.")
 
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -602,18 +663,26 @@ def main():
         comparison_csv = outdir / f"backtest_{ts}_mode_compare.csv"
         write_mode_comparison_csv(comparison_csv, mode_payload)
 
+    single_ladder_board = run_mode_pass(snapshot, cfg, force_mode="single_ladder")
+    live_recommendation = choose_live_recommendation(single_ladder_board)
+
     summary_report = {
         "timestamp_utc": ts,
         "top10": leaderboard[:10],
         "baseline": next((x for x in leaderboard if x["weights"] == cfg["weights"]), None),
         "mode_comparison": comparison_payload,
+        "live_recommendation": live_recommendation,
     }
     write_run_summary_md(summary_md, summary_report)
+
+    live_reco_md = outdir / f"backtest_{ts}_live_recommendation.md"
+    write_live_recommendation_md(live_reco_md, live_recommendation)
 
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
     print(f"Wrote category CSV: {category_csv}")
     print(f"Wrote summary MD: {summary_md}")
+    print(f"Wrote live recommendation MD: {live_reco_md}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
     if leaderboard:

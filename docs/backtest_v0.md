@@ -92,5 +92,7 @@ And writes companion reporting files:
 - `outputs/backtests/backtest_<timestamp>_categories.csv`
 - `outputs/backtests/backtest_<timestamp>_mode_compare.csv` (when `--compare-modes` is used)
 - `outputs/backtests/backtest_<timestamp>_summary.md`
+- `outputs/backtests/backtest_<timestamp>_live_recommendation.md`
 
 Category breakdown now uses explicit category fields when present, with text-based fallback inference from market/event metadata.
+A guardrail-aware live profile recommendation is produced from `single_ladder` results.
