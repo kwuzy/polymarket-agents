@@ -98,3 +98,7 @@ Category breakdown now uses explicit category fields when present, with text-bas
 A guardrail-aware live profile recommendation is produced from `single_ladder` results.
 
 Validation split is configurable via `validation.holdout_fraction` (default 0.25), and holdout robustness is emitted to `backtest_<timestamp>_holdout.md`.
+
+Cost sensitivity scenarios are configurable under `validation.cost_scenarios` and exported to:
+- `backtest_<timestamp>_cost_scenarios.csv`
+- `backtest_<timestamp>_cost_scenarios.md`

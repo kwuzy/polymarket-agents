@@ -33,6 +33,12 @@
     "max_variants": 250
   },
   "validation": {
-    "holdout_fraction": 0.25
+    "holdout_fraction": 0.25,
+    "cost_scenarios": [
+      {"label": "ideal", "fee_bps": 0, "slippage_bps": 0},
+      {"label": "light_cost", "fee_bps": 5, "slippage_bps": 5},
+      {"label": "moderate_cost", "fee_bps": 10, "slippage_bps": 15},
+      {"label": "stress_cost", "fee_bps": 20, "slippage_bps": 25}
+    ]
   }
 }

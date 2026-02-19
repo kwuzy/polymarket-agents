@@ -538,6 +538,98 @@ def evaluate_holdout(
     }
 
 
+def evaluate_cost_scenarios(
+    snapshot: List[Dict],
+    cfg: Dict,
+    baseline_weights: Dict,
+    recommended_weights: Dict,
+    scenarios: List[Dict],
+    mode: str = "single_ladder",
+) -> List[Dict]:
+    if not scenarios:
+        return []
+
+    out = []
+    for i, s in enumerate(scenarios):
+        fee_bps = float(s.get("fee_bps", 0))
+        slippage_bps = float(s.get("slippage_bps", 0))
+        label = s.get("label") or f"scenario_{i+1}"
+
+        cfg_local = json.loads(json.dumps(cfg))
+        exec_cfg = cfg_local.setdefault("execution", {})
+        exec_cfg["mode"] = mode
+        exec_cfg["fee_bps"] = fee_bps
+        exec_cfg["slippage_bps"] = slippage_bps
+        if mode == "single_ladder":
+            exec_cfg["max_concurrent_ladders"] = 1
+
+        baseline = run_backtest(snapshot, cfg_local, baseline_weights)
+        reco = run_backtest(snapshot, cfg_local, recommended_weights) if recommended_weights else None
+
+        out.append(
+            {
+                "label": label,
+                "mode": mode,
+                "fee_bps": fee_bps,
+                "slippage_bps": slippage_bps,
+                "baseline": baseline,
+                "recommended": reco,
+            }
+        )
+    return out
+
+
+def write_cost_scenarios_csv(path: Path, scenarios: List[Dict]) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "label",
+                "mode",
+                "fee_bps",
+                "slippage_bps",
+                "baseline_pnl",
+                "baseline_win_rate",
+                "recommended_pnl",
+                "recommended_win_rate",
+                "delta_pnl",
+            ],
+        )
+        writer.writeheader()
+        for s in scenarios:
+            b = s.get("baseline") or {}
+            r = s.get("recommended") or {}
+            writer.writerow(
+                {
+                    "label": s.get("label", ""),
+                    "mode": s.get("mode", ""),
+                    "fee_bps": s.get("fee_bps", 0),
+                    "slippage_bps": s.get("slippage_bps", 0),
+                    "baseline_pnl": b.get("pnl", 0.0),
+                    "baseline_win_rate": b.get("win_rate", 0.0),
+                    "recommended_pnl": r.get("pnl", 0.0),
+                    "recommended_win_rate": r.get("win_rate", 0.0),
+                    "delta_pnl": (r.get("pnl", 0.0) - b.get("pnl", 0.0)) if r else 0.0,
+                }
+            )
+
+
+def write_cost_scenarios_md(path: Path, scenarios: List[Dict]) -> None:
+    lines = ["# Cost Sensitivity", ""]
+    if not scenarios:
+        lines.append("No cost scenarios configured.")
+    else:
+        for s in scenarios:
+            b = s.get("baseline") or {}
+            r = s.get("recommended") or {}
+            delta = (r.get("pnl", 0.0) - b.get("pnl", 0.0)) if r else 0.0
+            lines.append(
+                f"- {s.get('label')}: fee={s.get('fee_bps')}bps, slip={s.get('slippage_bps')}bps | baseline_pnl={b.get('pnl',0.0):.4f}, recommended_pnl={r.get('pnl',0.0):.4f}, delta={delta:.4f}"
+            )
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def choose_live_recommendation(results: List[Dict]) -> Dict:
     """Pick a guardrail-aware profile from single_ladder results.
 
@@ -619,6 +711,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     mode_cmp = report.get("mode_comparison") or {}
     live_reco = report.get("live_recommendation") or {}
     holdout = report.get("holdout") or {}
+    cost_scenarios = report.get("cost_scenarios") or []
 
     lines = []
     lines.append("# Backtest Run Summary")
@@ -672,6 +765,20 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     else:
         lines.append("- Holdout disabled or insufficient data.")
 
+    lines.append("")
+    lines.append("## Cost sensitivity")
+    lines.append("")
+    if cost_scenarios:
+        for s in cost_scenarios:
+            b = s.get("baseline") or {}
+            r = s.get("recommended") or {}
+            delta = (r.get("pnl", 0.0) - b.get("pnl", 0.0)) if r else 0.0
+            lines.append(
+                f"- {s.get('label')}: fee={s.get('fee_bps')}bps, slip={s.get('slippage_bps')}bps, baseline_pnl={b.get('pnl',0.0):.4f}, reco_pnl={r.get('pnl',0.0):.4f}, delta={delta:.4f}"
+            )
+    else:
+        lines.append("- No cost scenarios configured.")
+
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -719,6 +826,16 @@ def main():
     live_recommendation = choose_live_recommendation(single_ladder_board)
     holdout_report = evaluate_holdout(single_ladder_board, holdout_snapshot, cfg, mode="single_ladder")
 
+    cost_scenarios_cfg = cfg.get("validation", {}).get("cost_scenarios", [])
+    cost_scenarios = evaluate_cost_scenarios(
+        train_snapshot,
+        cfg,
+        baseline_weights=cfg["weights"],
+        recommended_weights=(live_recommendation or {}).get("weights"),
+        scenarios=cost_scenarios_cfg,
+        mode="single_ladder",
+    )
+
     full_path = outdir / f"backtest_{ts}.json"
     with open(full_path, "w") as f:
         json.dump(
@@ -736,6 +853,7 @@ def main():
                 "all_results": leaderboard,
                 "mode_comparison": comparison_payload,
                 "holdout": holdout_report,
+                "cost_scenarios": cost_scenarios,
             },
             f,
             indent=2,
@@ -754,13 +872,18 @@ def main():
         "mode_comparison": comparison_payload,
         "live_recommendation": live_recommendation,
         "holdout": holdout_report,
+        "cost_scenarios": cost_scenarios,
     }
     write_run_summary_md(summary_md, summary_report)
 
     live_reco_md = outdir / f"backtest_{ts}_live_recommendation.md"
     holdout_md = outdir / f"backtest_{ts}_holdout.md"
+    cost_csv = outdir / f"backtest_{ts}_cost_scenarios.csv"
+    cost_md = outdir / f"backtest_{ts}_cost_scenarios.md"
     write_live_recommendation_md(live_reco_md, live_recommendation)
     write_holdout_md(holdout_md, holdout_report)
+    write_cost_scenarios_csv(cost_csv, cost_scenarios)
+    write_cost_scenarios_md(cost_md, cost_scenarios)
 
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
@@ -768,6 +891,8 @@ def main():
     print(f"Wrote summary MD: {summary_md}")
     print(f"Wrote live recommendation MD: {live_reco_md}")
     print(f"Wrote holdout MD: {holdout_md}")
+    print(f"Wrote cost scenarios CSV: {cost_csv}")
+    print(f"Wrote cost scenarios MD: {cost_md}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
     if leaderboard:
