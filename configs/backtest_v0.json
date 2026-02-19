@@ -34,6 +34,7 @@
   },
   "validation": {
     "holdout_fraction": 0.25,
+    "folds": 4,
     "cost_scenarios": [
       {"label": "ideal", "fee_bps": 0, "slippage_bps": 0},
       {"label": "light_cost", "fee_bps": 5, "slippage_bps": 5},

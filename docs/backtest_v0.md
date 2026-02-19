@@ -99,6 +99,10 @@ A guardrail-aware live profile recommendation is produced from `single_ladder` r
 
 Validation split is configurable via `validation.holdout_fraction` (default 0.25), and holdout robustness is emitted to `backtest_<timestamp>_holdout.md`.
 
+Blocked fold robustness is configurable with `validation.folds` and exported to:
+- `backtest_<timestamp>_fold_robustness.csv`
+- `backtest_<timestamp>_fold_robustness.md`
+
 Cost sensitivity scenarios are configurable under `validation.cost_scenarios` and exported to:
 - `backtest_<timestamp>_cost_scenarios.csv`
 - `backtest_<timestamp>_cost_scenarios.md`

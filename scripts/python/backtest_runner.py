@@ -452,6 +452,22 @@ def split_snapshot(snapshot: List[Dict], holdout_fraction: float) -> Tuple[List[
     return snapshot[:cut], snapshot[cut:]
 
 
+def build_blocked_folds(snapshot: List[Dict], folds: int) -> List[Tuple[List[Dict], List[Dict]]]:
+    if folds <= 1 or len(snapshot) < 4:
+        return []
+    n = len(snapshot)
+    fold_size = max(1, n // folds)
+    out = []
+    for i in range(folds):
+        start = i * fold_size
+        end = n if i == folds - 1 else min(n, (i + 1) * fold_size)
+        test = snapshot[start:end]
+        train = snapshot[:start] + snapshot[end:]
+        if train and test:
+            out.append((train, test))
+    return out
+
+
 def run_mode_pass(snapshot: List[Dict], cfg: Dict, force_mode: str = None) -> List[Dict]:
     cfg_local = json.loads(json.dumps(cfg))
     if force_mode is not None:
@@ -681,6 +697,97 @@ def write_data_quality_md(path: Path, dataset_meta: Dict, baseline: Dict, holdou
         f.write("\n".join(lines) + "\n")
 
 
+def evaluate_fold_robustness(snapshot: List[Dict], cfg: Dict, folds: int, mode: str = "single_ladder") -> List[Dict]:
+    fold_pairs = build_blocked_folds(snapshot, folds)
+    out = []
+    for idx, (train, test) in enumerate(fold_pairs, start=1):
+        board = run_mode_pass(train, cfg, force_mode=mode)
+        if not board:
+            continue
+        best_train = board[0]
+        baseline_train = next((x for x in board if x["weights"] == cfg["weights"]), None)
+
+        cfg_local = json.loads(json.dumps(cfg))
+        cfg_local.setdefault("execution", {})["mode"] = mode
+        if mode == "single_ladder":
+            cfg_local["execution"]["max_concurrent_ladders"] = 1
+
+        best_test = run_backtest(test, cfg_local, best_train["weights"])
+        baseline_test = run_backtest(test, cfg_local, cfg["weights"])
+
+        out.append(
+            {
+                "fold": idx,
+                "train_size": len(train),
+                "test_size": len(test),
+                "train_best": best_train,
+                "train_baseline": baseline_train,
+                "test_best": best_test,
+                "test_baseline": baseline_test,
+            }
+        )
+    return out
+
+
+def write_fold_robustness_csv(path: Path, folds: List[Dict]) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "fold",
+                "train_size",
+                "test_size",
+                "test_best_pnl",
+                "test_best_win_rate",
+                "test_best_trades",
+                "test_baseline_pnl",
+                "test_baseline_win_rate",
+                "test_baseline_trades",
+                "delta_pnl",
+            ],
+        )
+        writer.writeheader()
+        for r in folds:
+            tb = r.get("test_best") or {}
+            bl = r.get("test_baseline") or {}
+            writer.writerow(
+                {
+                    "fold": r.get("fold"),
+                    "train_size": r.get("train_size"),
+                    "test_size": r.get("test_size"),
+                    "test_best_pnl": tb.get("pnl", 0.0),
+                    "test_best_win_rate": tb.get("win_rate", 0.0),
+                    "test_best_trades": tb.get("trades", 0),
+                    "test_baseline_pnl": bl.get("pnl", 0.0),
+                    "test_baseline_win_rate": bl.get("win_rate", 0.0),
+                    "test_baseline_trades": bl.get("trades", 0),
+                    "delta_pnl": tb.get("pnl", 0.0) - bl.get("pnl", 0.0),
+                }
+            )
+
+
+def write_fold_robustness_md(path: Path, folds: List[Dict]) -> None:
+    lines = ["# Fold Robustness", ""]
+    if not folds:
+        lines.append("Fold validation disabled or insufficient data.")
+    else:
+        deltas = []
+        for r in folds:
+            tb = r.get("test_best") or {}
+            bl = r.get("test_baseline") or {}
+            delta = tb.get("pnl", 0.0) - bl.get("pnl", 0.0)
+            deltas.append(delta)
+            lines.append(
+                f"- fold {r.get('fold')}: test_best_pnl={tb.get('pnl',0.0):.4f}, test_baseline_pnl={bl.get('pnl',0.0):.4f}, delta={delta:.4f}, best_trades={tb.get('trades',0)}, baseline_trades={bl.get('trades',0)}"
+            )
+        lines.append("")
+        pos = sum(1 for d in deltas if d > 0)
+        lines.append(f"- Positive delta folds: {pos}/{len(deltas)}")
+        lines.append(f"- Avg delta pnl: {sum(deltas)/len(deltas):.4f}")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def choose_live_recommendation(results: List[Dict]) -> Dict:
     """Pick a guardrail-aware profile from single_ladder results.
 
@@ -763,6 +870,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     live_reco = report.get("live_recommendation") or {}
     holdout = report.get("holdout") or {}
     cost_scenarios = report.get("cost_scenarios") or []
+    fold_robustness = report.get("fold_robustness") or []
 
     lines = []
     lines.append("# Backtest Run Summary")
@@ -832,6 +940,22 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     else:
         lines.append("- No cost scenarios configured.")
 
+    lines.append("")
+    lines.append("## Fold robustness")
+    lines.append("")
+    if fold_robustness:
+        deltas = []
+        for r in fold_robustness:
+            tb = r.get("test_best") or {}
+            bl = r.get("test_baseline") or {}
+            delta = tb.get("pnl", 0.0) - bl.get("pnl", 0.0)
+            deltas.append(delta)
+            lines.append(f"- fold {r.get('fold')}: delta_pnl={delta:.4f}, best_trades={tb.get('trades',0)}, baseline_trades={bl.get('trades',0)}")
+        lines.append(f"- positive folds: {sum(1 for d in deltas if d > 0)}/{len(deltas)}")
+        lines.append(f"- avg delta pnl: {sum(deltas)/len(deltas):.4f}")
+    else:
+        lines.append("- Fold validation disabled or insufficient data.")
+
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
@@ -889,6 +1013,9 @@ def main():
         mode="single_ladder",
     )
 
+    fold_count = int(cfg.get("validation", {}).get("folds", 0) or 0)
+    fold_robustness = evaluate_fold_robustness(snapshot, cfg, fold_count, mode="single_ladder")
+
     dataset_meta = {
         "total_markets": len(snapshot),
         "train_markets": len(train_snapshot),
@@ -910,6 +1037,7 @@ def main():
                 "mode_comparison": comparison_payload,
                 "holdout": holdout_report,
                 "cost_scenarios": cost_scenarios,
+                "fold_robustness": fold_robustness,
             },
             f,
             indent=2,
@@ -929,6 +1057,7 @@ def main():
         "live_recommendation": live_recommendation,
         "holdout": holdout_report,
         "cost_scenarios": cost_scenarios,
+        "fold_robustness": fold_robustness,
     }
     write_run_summary_md(summary_md, summary_report)
 
@@ -936,11 +1065,15 @@ def main():
     holdout_md = outdir / f"backtest_{ts}_holdout.md"
     cost_csv = outdir / f"backtest_{ts}_cost_scenarios.csv"
     cost_md = outdir / f"backtest_{ts}_cost_scenarios.md"
+    fold_csv = outdir / f"backtest_{ts}_fold_robustness.csv"
+    fold_md = outdir / f"backtest_{ts}_fold_robustness.md"
     data_quality_md = outdir / f"backtest_{ts}_data_quality.md"
     write_live_recommendation_md(live_reco_md, live_recommendation)
     write_holdout_md(holdout_md, holdout_report)
     write_cost_scenarios_csv(cost_csv, cost_scenarios)
     write_cost_scenarios_md(cost_md, cost_scenarios)
+    write_fold_robustness_csv(fold_csv, fold_robustness)
+    write_fold_robustness_md(fold_md, fold_robustness)
     write_data_quality_md(data_quality_md, dataset_meta, baseline_result, holdout_report)
 
     print(f"Wrote report: {full_path}")
@@ -951,6 +1084,8 @@ def main():
     print(f"Wrote holdout MD: {holdout_md}")
     print(f"Wrote cost scenarios CSV: {cost_csv}")
     print(f"Wrote cost scenarios MD: {cost_md}")
+    print(f"Wrote fold robustness CSV: {fold_csv}")
+    print(f"Wrote fold robustness MD: {fold_md}")
     print(f"Wrote data quality MD: {data_quality_md}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
