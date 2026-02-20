@@ -1151,6 +1151,61 @@ def write_holdout_md(path: Path, holdout_report: Dict) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+
+
+def build_live_profile_config(cfg: Dict, recommendation: Dict) -> Dict:
+    if not recommendation:
+        return {}
+
+    risk = cfg.get("risk", {}) or {}
+    execution = cfg.get("execution", {}) or {}
+
+    return {
+        "version": "backtest-live-profile/v1",
+        "selected_at_utc": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "selection_basis": {
+            "method": "guardrail-aware-single-ladder",
+            "score_components": ["pnl", "max_drawdown", "max_loss_streak"],
+            "constraints": {
+                "min_trades": 5,
+                "min_win_rate": 0.40,
+                "max_drawdown": 0.20,
+            },
+        },
+        "weights": recommendation.get("weights", {}),
+        "expected_backtest_metrics": {
+            "pnl": recommendation.get("pnl", 0.0),
+            "win_rate": recommendation.get("win_rate", 0.0),
+            "trades": recommendation.get("trades", 0),
+            "max_drawdown": recommendation.get("max_drawdown", 0.0),
+            "max_loss_streak": recommendation.get("max_loss_streak", 0),
+        },
+        "execution": {
+            "mode": "single_ladder",
+            "max_concurrent_ladders": 1,
+            "fee_bps": execution.get("fee_bps", 0),
+            "slippage_bps": execution.get("slippage_bps", 0),
+            "slippage_model": execution.get("slippage_model", {}),
+        },
+        "risk": {
+            "starting_bankroll": risk.get("starting_bankroll", 0.0),
+            "risk_unit_pct": risk.get("risk_unit_pct", 0.0),
+            "capital_utilization": risk.get("capital_utilization", 0.0),
+            "max_drawdown": risk.get("max_drawdown", 0.0),
+            "daily_loss_cap": risk.get("daily_loss_cap", 0.0),
+            "freeze_ru_within_ladder": risk.get("freeze_ru_within_ladder", True),
+        },
+        "notes": [
+            "Backtest recommendation only; not financial advice.",
+            "Verify with forward tests/paper trading before live deployment.",
+        ],
+    }
+
+
+def write_live_profile_json(path: Path, payload: Dict) -> None:
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+
 def write_live_recommendation_md(path: Path, recommendation: Dict) -> None:
     lines = ["# Live Profile Recommendation", ""]
     if not recommendation:
@@ -1178,6 +1233,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     top = (report.get("top10") or [{}])[0]
     mode_cmp = report.get("mode_comparison") or {}
     live_reco = report.get("live_recommendation") or {}
+    live_profile = report.get("live_profile") or {}
     holdout = report.get("holdout") or {}
     cost_scenarios = report.get("cost_scenarios") or []
     fold_robustness = report.get("fold_robustness") or []
@@ -1224,6 +1280,17 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
         lines.append(f"- max_drawdown={live_reco.get('max_drawdown',0.0):.3f}, max_loss_streak={live_reco.get('max_loss_streak',0)}")
     else:
         lines.append("- No eligible live recommendation under current guardrails.")
+
+    lines.append("")
+    lines.append("## Live profile config emitter")
+    lines.append("")
+    if live_profile:
+        lines.append(f"- version={live_profile.get('version','')}")
+        lines.append(f"- mode={((live_profile.get('execution') or {}).get('mode',''))}")
+        lines.append(f"- max_concurrent_ladders={((live_profile.get('execution') or {}).get('max_concurrent_ladders',0))}")
+        lines.append(f"- selected_weights={live_profile.get('weights',{})}")
+    else:
+        lines.append("- No live profile emitted (no eligible recommendation).")
 
     lines.append("")
     lines.append("## Holdout robustness (single_ladder)")
@@ -1342,6 +1409,7 @@ def main():
     multi_line_baseline = next((x for x in multi_line_board if x["weights"] == cfg["weights"]), None)
 
     live_recommendation = choose_live_recommendation(single_ladder_board)
+    live_profile = build_live_profile_config(cfg, live_recommendation)
     holdout_report = evaluate_holdout(single_ladder_board, holdout_snapshot, cfg, mode="single_ladder")
 
     cost_scenarios_cfg = cfg.get("validation", {}).get("cost_scenarios", [])
@@ -1399,6 +1467,7 @@ def main():
         "baseline": baseline_result,
         "mode_comparison": comparison_payload,
         "live_recommendation": live_recommendation,
+        "live_profile": live_profile,
         "holdout": holdout_report,
         "cost_scenarios": cost_scenarios,
         "fold_robustness": fold_robustness,
@@ -1408,6 +1477,7 @@ def main():
     write_run_summary_md(summary_md, summary_report)
 
     live_reco_md = outdir / f"backtest_{ts}_live_recommendation.md"
+    live_profile_json = outdir / f"backtest_{ts}_live_profile.json"
     holdout_md = outdir / f"backtest_{ts}_holdout.md"
     cost_csv = outdir / f"backtest_{ts}_cost_scenarios.csv"
     cost_md = outdir / f"backtest_{ts}_cost_scenarios.md"
@@ -1418,6 +1488,7 @@ def main():
     walk_forward_md = outdir / f"backtest_{ts}_walk_forward.md"
     data_quality_md = outdir / f"backtest_{ts}_data_quality.md"
     write_live_recommendation_md(live_reco_md, live_recommendation)
+    write_live_profile_json(live_profile_json, live_profile)
     write_holdout_md(holdout_md, holdout_report)
     write_cost_scenarios_csv(cost_csv, cost_scenarios)
     write_cost_scenarios_md(cost_md, cost_scenarios)
@@ -1433,6 +1504,7 @@ def main():
     print(f"Wrote category CSV: {category_csv}")
     print(f"Wrote summary MD: {summary_md}")
     print(f"Wrote live recommendation MD: {live_reco_md}")
+    print(f"Wrote live profile JSON: {live_profile_json}")
     print(f"Wrote holdout MD: {holdout_md}")
     print(f"Wrote cost scenarios CSV: {cost_csv}")
     print(f"Wrote cost scenarios MD: {cost_md}")
