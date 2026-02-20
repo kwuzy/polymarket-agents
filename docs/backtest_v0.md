@@ -169,3 +169,9 @@ Deployment decision artifacts are emitted to:
 - `backtest_<timestamp>_decision_card.json`
 
 These summarize GO/PAPER/NO-GO posture from readiness + robustness signals for supervised rollout decisions.
+
+Guardrail alert artifacts are emitted to:
+- `backtest_<timestamp>_guardrail_alerts.md`
+- `backtest_<timestamp>_guardrail_alerts.json`
+
+Configure thresholds in `validation.guardrail_alerts` (`max_drawdown`, `min_trades`, `min_win_rate`, `min_readiness_score`).

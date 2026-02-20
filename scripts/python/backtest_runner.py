@@ -1294,6 +1294,7 @@ def compute_live_readiness(report: Dict) -> Dict:
     feature_sources = report.get("feature_sources") or {}
     live_readiness = report.get("live_readiness") or {}
     decision_card = report.get("decision_card") or {}
+    guardrail_alerts = report.get("guardrail_alerts") or {}
 
     score = 100
     reasons = []
@@ -1393,6 +1394,7 @@ def build_deployment_decision_card(report: Dict) -> Dict:
     holdout = report.get("holdout") or {}
     live_readiness = report.get("live_readiness") or {}
     decision_card = report.get("decision_card") or {}
+    guardrail_alerts = report.get("guardrail_alerts") or {}
     live_profile = report.get("live_profile") or {}
 
     hb = holdout.get("test_best") or {}
@@ -1468,6 +1470,76 @@ def write_deployment_decision_card_json(path: Path, payload: Dict) -> None:
         json.dump(payload, f, indent=2)
 
 
+
+
+def evaluate_guardrail_breaches(report: Dict, cfg: Dict) -> Dict:
+    rules = ((cfg.get("validation") or {}).get("guardrail_alerts") or {})
+    baseline = report.get("baseline") or {}
+    holdout = report.get("holdout") or {}
+    live_readiness = report.get("live_readiness") or {}
+
+    max_drawdown_limit = float(rules.get("max_drawdown", 0.20))
+    min_trades = int(rules.get("min_trades", 20))
+    min_win_rate = float(rules.get("min_win_rate", 0.45))
+    min_readiness = int(rules.get("min_readiness_score", 75))
+
+    alerts = []
+    dd = float(baseline.get("max_drawdown", 1.0) or 1.0)
+    trades = int(baseline.get("trades", 0) or 0)
+    wr = float(baseline.get("win_rate", 0.0) or 0.0)
+    score = int(live_readiness.get("score", 0) or 0)
+
+    if dd > max_drawdown_limit:
+        alerts.append({"severity": "high", "check": "max_drawdown", "value": dd, "limit": max_drawdown_limit})
+    if trades < min_trades:
+        alerts.append({"severity": "high", "check": "min_trades", "value": trades, "limit": min_trades})
+    if wr < min_win_rate:
+        alerts.append({"severity": "medium", "check": "min_win_rate", "value": wr, "limit": min_win_rate})
+    if score < min_readiness:
+        alerts.append({"severity": "high", "check": "min_readiness_score", "value": score, "limit": min_readiness})
+
+    hb = holdout.get("test_best") or {}
+    hbase = holdout.get("test_baseline") or {}
+    if hb and hbase:
+        delta = float(hb.get("pnl", 0.0)) - float(hbase.get("pnl", 0.0))
+        if delta < 0:
+            alerts.append({"severity": "medium", "check": "holdout_delta_pnl", "value": delta, "limit": 0.0})
+
+    blocked = any(a["severity"] == "high" for a in alerts)
+    return {
+        "blocked": blocked,
+        "alert_count": len(alerts),
+        "alerts": alerts,
+        "thresholds": {
+            "max_drawdown": max_drawdown_limit,
+            "min_trades": min_trades,
+            "min_win_rate": min_win_rate,
+            "min_readiness_score": min_readiness,
+        },
+    }
+
+
+def write_guardrail_alerts_md(path: Path, payload: Dict) -> None:
+    lines = ["# Guardrail Breach Alerts", ""]
+    lines.append(f"- blocked={payload.get('blocked', False)}")
+    lines.append(f"- alert_count={payload.get('alert_count', 0)}")
+    lines.append("")
+    lines.append("## Alerts")
+    alerts = payload.get("alerts") or []
+    if not alerts:
+        lines.append("- none")
+    else:
+        for a in alerts:
+            lines.append(f"- [{a.get('severity','low')}] {a.get('check')}: value={a.get('value')} limit={a.get('limit')}")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def write_guardrail_alerts_json(path: Path, payload: Dict) -> None:
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
 def write_run_summary_md(path: Path, report: Dict) -> None:
     baseline = report.get("baseline") or {}
     top = (report.get("top10") or [{}])[0]
@@ -1482,6 +1554,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     feature_sources = report.get("feature_sources") or {}
     live_readiness = report.get("live_readiness") or {}
     decision_card = report.get("decision_card") or {}
+    guardrail_alerts = report.get("guardrail_alerts") or {}
 
     lines = []
     lines.append("# Backtest Run Summary")
@@ -1623,6 +1696,15 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
         lines.append("- No deployment decision card generated.")
 
     lines.append("")
+    lines.append("## Guardrail alerts")
+    lines.append("")
+    if guardrail_alerts:
+        lines.append(f"- blocked={guardrail_alerts.get('blocked', False)}")
+        lines.append(f"- alert_count={guardrail_alerts.get('alert_count', 0)}")
+    else:
+        lines.append("- No guardrail alerts generated.")
+
+    lines.append("")
     lines.append("## Multi-line baseline")
     lines.append("")
     if multi_line_baseline:
@@ -1726,6 +1808,7 @@ def main():
                 "feature_sources": feature_sources,
                 "live_readiness": compute_live_readiness({"baseline": baseline_result, "holdout": holdout_report, "walk_forward": walk_forward, "feature_sources": feature_sources}),
                 "decision_card": build_deployment_decision_card({"baseline": baseline_result, "holdout": holdout_report, "live_profile": live_profile, "live_readiness": compute_live_readiness({"baseline": baseline_result, "holdout": holdout_report, "walk_forward": walk_forward, "feature_sources": feature_sources})}),
+                "guardrail_alerts": evaluate_guardrail_breaches({"baseline": baseline_result, "holdout": holdout_report, "live_readiness": compute_live_readiness({"baseline": baseline_result, "holdout": holdout_report, "walk_forward": walk_forward, "feature_sources": feature_sources})}, cfg),
             },
             f,
             indent=2,
@@ -1753,7 +1836,8 @@ def main():
     }
     live_readiness = compute_live_readiness(temp_report)
     decision_card = build_deployment_decision_card({**temp_report, "live_readiness": live_readiness})
-    summary_report = {**temp_report, "live_readiness": live_readiness, "decision_card": decision_card}
+    guardrail_alerts = evaluate_guardrail_breaches({**temp_report, "live_readiness": live_readiness}, cfg)
+    summary_report = {**temp_report, "live_readiness": live_readiness, "decision_card": decision_card, "guardrail_alerts": guardrail_alerts}
     write_run_summary_md(summary_md, summary_report)
 
     live_reco_md = outdir / f"backtest_{ts}_live_recommendation.md"
@@ -1773,6 +1857,8 @@ def main():
     live_readiness_json = outdir / f"backtest_{ts}_live_readiness.json"
     decision_card_md = outdir / f"backtest_{ts}_decision_card.md"
     decision_card_json = outdir / f"backtest_{ts}_decision_card.json"
+    guardrail_alerts_md = outdir / f"backtest_{ts}_guardrail_alerts.md"
+    guardrail_alerts_json = outdir / f"backtest_{ts}_guardrail_alerts.json"
     write_live_recommendation_md(live_reco_md, live_recommendation)
     write_live_profile_json(live_profile_json, live_profile)
     write_holdout_md(holdout_md, holdout_report)
@@ -1790,6 +1876,8 @@ def main():
     write_live_readiness_json(live_readiness_json, summary_report.get("live_readiness", {}))
     write_deployment_decision_card_md(decision_card_md, summary_report.get("decision_card", {}))
     write_deployment_decision_card_json(decision_card_json, summary_report.get("decision_card", {}))
+    write_guardrail_alerts_md(guardrail_alerts_md, summary_report.get("guardrail_alerts", {}))
+    write_guardrail_alerts_json(guardrail_alerts_json, summary_report.get("guardrail_alerts", {}))
 
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
@@ -1812,6 +1900,8 @@ def main():
     print(f"Wrote live readiness JSON: {live_readiness_json}")
     print(f"Wrote decision card MD: {decision_card_md}")
     print(f"Wrote decision card JSON: {decision_card_json}")
+    print(f"Wrote guardrail alerts MD: {guardrail_alerts_md}")
+    print(f"Wrote guardrail alerts JSON: {guardrail_alerts_json}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
     if leaderboard:
