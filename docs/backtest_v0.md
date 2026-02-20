@@ -179,3 +179,9 @@ Configure thresholds in `validation.guardrail_alerts` (`max_drawdown`, `min_trad
 Run registry outputs:
 - `backtest_<timestamp>_manifest.json` (artifact map + decision signals)
 - `backtest_run_index.csv` (append-only index across runs)
+
+Trend outputs (derived from run index):
+- `backtest_run_trends.md`
+- `backtest_run_trends.json`
+
+These summarize recent run health (avg readiness, decision mix, and guardrail block rate).
