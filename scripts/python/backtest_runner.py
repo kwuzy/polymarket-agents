@@ -1746,6 +1746,65 @@ def write_run_manifest_json(path: Path, payload: Dict) -> None:
         json.dump(payload, f, indent=2)
 
 
+
+
+def summarize_run_index(index_csv: Path, tail_n: int = 20) -> Dict:
+    if not index_csv.exists():
+        return {"count": 0, "avg_readiness": 0.0, "decision_counts": {}, "blocked_rate": 0.0}
+
+    rows = []
+    with open(index_csv, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            rows.append(r)
+
+    rows = rows[-tail_n:]
+    if not rows:
+        return {"count": 0, "avg_readiness": 0.0, "decision_counts": {}, "blocked_rate": 0.0}
+
+    readiness_vals = []
+    decision_counts = {}
+    blocked = 0
+    for r in rows:
+        try:
+            readiness_vals.append(float(r.get("readiness_score", 0) or 0))
+        except Exception:
+            readiness_vals.append(0.0)
+        d = r.get("decision", "") or ""
+        decision_counts[d] = decision_counts.get(d, 0) + 1
+        blocked_flag = str(r.get("guardrail_blocked", "False")).lower() in {"1", "true", "yes"}
+        blocked += int(blocked_flag)
+
+    return {
+        "count": len(rows),
+        "avg_readiness": (sum(readiness_vals) / len(readiness_vals)) if readiness_vals else 0.0,
+        "decision_counts": decision_counts,
+        "blocked_rate": (blocked / len(rows)) if rows else 0.0,
+    }
+
+
+def write_run_trends_md(path: Path, payload: Dict) -> None:
+    lines = ["# Run Trend Summary", ""]
+    lines.append(f"- sample_count={payload.get('count', 0)}")
+    lines.append(f"- avg_readiness={payload.get('avg_readiness', 0.0):.2f}")
+    lines.append(f"- blocked_rate={payload.get('blocked_rate', 0.0):.3f}")
+    lines.append("")
+    lines.append("## Decisions")
+    dc = payload.get("decision_counts") or {}
+    if not dc:
+        lines.append("- none")
+    else:
+        for k, v in sorted(dc.items()):
+            lines.append(f"- {k}: {v}")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def write_run_trends_json(path: Path, payload: Dict) -> None:
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Deterministic Polymarket backtest runner")
     parser.add_argument("--config", default="configs/backtest_v0.json")
@@ -1946,12 +2005,20 @@ def main():
         },
     )
 
+    run_trends = summarize_run_index(run_index_csv, tail_n=20)
+    run_trends_md = outdir / "backtest_run_trends.md"
+    run_trends_json = outdir / "backtest_run_trends.json"
+    write_run_trends_md(run_trends_md, run_trends)
+    write_run_trends_json(run_trends_json, run_trends)
+
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
     print(f"Wrote category CSV: {category_csv}")
     print(f"Wrote summary MD: {summary_md}")
     print(f"Wrote run manifest JSON: {run_manifest_json}")
     print(f"Updated run index CSV: {outdir / 'backtest_run_index.csv'}")
+    print(f"Updated run trends MD: {outdir / 'backtest_run_trends.md'}")
+    print(f"Updated run trends JSON: {outdir / 'backtest_run_trends.json'}")
     print(f"Wrote live recommendation MD: {live_reco_md}")
     print(f"Wrote live profile JSON: {live_profile_json}")
     print(f"Wrote holdout MD: {holdout_md}")
