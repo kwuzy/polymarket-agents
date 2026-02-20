@@ -207,6 +207,63 @@ def synth_signals(market: Dict, implied: float, seed: int) -> Dict[str, float]:
     }
 
 
+def signal_source_map(cfg: Dict) -> Dict[str, str]:
+    fmap = (((cfg or {}).get("features") or {}).get("sources") or {})
+    default = {
+        "market": "live_market_price",
+        "cross": "synthetic_proxy",
+        "news": "synthetic_proxy",
+        "reddit": "synthetic_proxy",
+        "trader": "synthetic_proxy",
+    }
+    default.update({k: str(v) for k, v in fmap.items() if k in default})
+    return default
+
+
+def write_feature_sources_md(path: Path, source_map: Dict[str, str], weights: Dict[str, float]) -> None:
+    lines = ["# Feature Source Audit", ""]
+    synthetic_weight = 0.0
+    live_weight = 0.0
+    for k in ["market", "cross", "news", "reddit", "trader"]:
+        src = source_map.get(k, "unknown")
+        w = float(weights.get(k, 0.0) or 0.0)
+        lines.append(f"- {k}: source={src}, weight={w:.3f}")
+        if src.startswith("live"):
+            live_weight += w
+        else:
+            synthetic_weight += w
+    lines.append("")
+    lines.append(f"- live_weight_share={live_weight:.3f}")
+    lines.append(f"- synthetic_weight_share={synthetic_weight:.3f}")
+    if synthetic_weight > 0.0:
+        lines.append("- ⚠️ Synthetic features present: treat this as framework validation, not production alpha.")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def write_feature_sources_json(path: Path, source_map: Dict[str, str], weights: Dict[str, float]) -> None:
+    live_weight = 0.0
+    synthetic_weight = 0.0
+    rows = []
+    for k in ["market", "cross", "news", "reddit", "trader"]:
+        src = source_map.get(k, "unknown")
+        w = float(weights.get(k, 0.0) or 0.0)
+        rows.append({"feature": k, "source": src, "weight": w})
+        if src.startswith("live"):
+            live_weight += w
+        else:
+            synthetic_weight += w
+    payload = {
+        "features": rows,
+        "totals": {
+            "live_weight_share": live_weight,
+            "synthetic_weight_share": synthetic_weight,
+        },
+    }
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
 def weighted_prob(signals: Dict[str, float], weights: Dict[str, float]) -> float:
     return clip(sum(signals[k] * weights[k] for k in weights.keys()))
 
@@ -1239,6 +1296,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     fold_robustness = report.get("fold_robustness") or []
     walk_forward = report.get("walk_forward") or []
     multi_line_baseline = report.get("multi_line_baseline") or {}
+    feature_sources = report.get("feature_sources") or {}
 
     lines = []
     lines.append("# Backtest Run Summary")
@@ -1352,6 +1410,15 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
         lines.append("- Walk-forward disabled or insufficient windows.")
 
     lines.append("")
+    lines.append("## Feature source audit")
+    lines.append("")
+    if feature_sources:
+        for k in ["market", "cross", "news", "reddit", "trader"]:
+            lines.append(f"- {k}: source={feature_sources.get(k, 'unknown')}")
+    else:
+        lines.append("- Feature sources not provided.")
+
+    lines.append("")
     lines.append("## Multi-line baseline")
     lines.append("")
     if multi_line_baseline:
@@ -1433,6 +1500,7 @@ def main():
         "holdout_fraction": holdout_fraction,
     }
     baseline_result = next((x for x in leaderboard if x["weights"] == cfg["weights"]), None)
+    feature_sources = signal_source_map(cfg)
 
     full_path = outdir / f"backtest_{ts}.json"
     with open(full_path, "w") as f:
@@ -1450,6 +1518,8 @@ def main():
                 "fold_robustness": fold_robustness,
                 "walk_forward": walk_forward,
                 "multi_line_baseline": multi_line_baseline,
+        "feature_sources": feature_sources,
+                "feature_sources": feature_sources,
             },
             f,
             indent=2,
@@ -1473,6 +1543,7 @@ def main():
         "fold_robustness": fold_robustness,
         "walk_forward": walk_forward,
         "multi_line_baseline": multi_line_baseline,
+        "feature_sources": feature_sources,
     }
     write_run_summary_md(summary_md, summary_report)
 
@@ -1487,6 +1558,8 @@ def main():
     walk_forward_csv = outdir / f"backtest_{ts}_walk_forward.csv"
     walk_forward_md = outdir / f"backtest_{ts}_walk_forward.md"
     data_quality_md = outdir / f"backtest_{ts}_data_quality.md"
+    feature_sources_md = outdir / f"backtest_{ts}_feature_sources.md"
+    feature_sources_json = outdir / f"backtest_{ts}_feature_sources.json"
     write_live_recommendation_md(live_reco_md, live_recommendation)
     write_live_profile_json(live_profile_json, live_profile)
     write_holdout_md(holdout_md, holdout_report)
@@ -1498,6 +1571,8 @@ def main():
     write_walk_forward_md(walk_forward_md, walk_forward)
     write_multiline_md(multiline_md, multi_line_baseline)
     write_data_quality_md(data_quality_md, dataset_meta, baseline_result, holdout_report)
+    write_feature_sources_md(feature_sources_md, feature_sources, cfg.get("weights", {}))
+    write_feature_sources_json(feature_sources_json, feature_sources, cfg.get("weights", {}))
 
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
@@ -1514,6 +1589,8 @@ def main():
     print(f"Wrote walk-forward MD: {walk_forward_md}")
     print(f"Wrote multi-line MD: {multiline_md}")
     print(f"Wrote data quality MD: {data_quality_md}")
+    print(f"Wrote feature sources MD: {feature_sources_md}")
+    print(f"Wrote feature sources JSON: {feature_sources_json}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
     if leaderboard:
