@@ -78,5 +78,14 @@
       "test_size": 60,
       "step_size": 60
     }
+  },
+  "features": {
+    "sources": {
+      "market": "live_market_price",
+      "cross": "synthetic_proxy",
+      "news": "synthetic_proxy",
+      "reddit": "synthetic_proxy",
+      "trader": "synthetic_proxy"
+    }
   }
 }

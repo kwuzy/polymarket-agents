@@ -151,3 +151,9 @@ Run diagnostics now include `avg_effective_slippage_bps`.
 
 
 `backtest_<timestamp>_live_profile.json` emits a machine-readable live configuration payload derived from the guardrail-aware single-ladder recommendation (weights, risk/execution settings, and selection metadata).
+
+Feature source audit outputs are emitted to:
+- `backtest_<timestamp>_feature_sources.md`
+- `backtest_<timestamp>_feature_sources.json`
+
+Configure feature provenance in `features.sources` to track live vs synthetic signals and weight share realism in each run.
