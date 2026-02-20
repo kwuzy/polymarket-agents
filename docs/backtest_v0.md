@@ -157,3 +157,9 @@ Feature source audit outputs are emitted to:
 - `backtest_<timestamp>_feature_sources.json`
 
 Configure feature provenance in `features.sources` to track live vs synthetic signals and weight share realism in each run.
+
+Live readiness gate outputs are emitted to:
+- `backtest_<timestamp>_live_readiness.md`
+- `backtest_<timestamp>_live_readiness.json`
+
+The readiness score combines baseline quality, holdout/walk-forward robustness, and feature-source realism (live vs synthetic share).

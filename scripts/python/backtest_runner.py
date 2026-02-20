@@ -1285,6 +1285,106 @@ def write_live_recommendation_md(path: Path, recommendation: Dict) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+
+
+def compute_live_readiness(report: Dict) -> Dict:
+    baseline = report.get("baseline") or {}
+    holdout = report.get("holdout") or {}
+    walk_forward = report.get("walk_forward") or []
+    feature_sources = report.get("feature_sources") or {}
+    live_readiness = report.get("live_readiness") or {}
+
+    score = 100
+    reasons = []
+
+    b_trades = int(baseline.get("trades", 0) or 0)
+    b_dd = float(baseline.get("max_drawdown", 1.0) or 1.0)
+    b_wr = float(baseline.get("win_rate", 0.0) or 0.0)
+
+    if b_trades < 20:
+        score -= 20
+        reasons.append("low_trade_count")
+    if b_dd > 0.2:
+        score -= 25
+        reasons.append("high_drawdown")
+    if b_wr < 0.45:
+        score -= 10
+        reasons.append("weak_win_rate")
+
+    hb = holdout.get("test_best") or {}
+    hbase = holdout.get("test_baseline") or {}
+    if hb and hbase:
+        if float(hb.get("pnl", 0.0)) < float(hbase.get("pnl", 0.0)):
+            score -= 20
+            reasons.append("holdout_underperforms_baseline")
+    else:
+        score -= 10
+        reasons.append("missing_holdout_signal")
+
+    if walk_forward:
+        deltas = []
+        for r in walk_forward:
+            tb = r.get("test_best") or {}
+            bl = r.get("test_baseline") or {}
+            deltas.append(float(tb.get("pnl", 0.0)) - float(bl.get("pnl", 0.0)))
+        pos = sum(1 for d in deltas if d > 0)
+        if pos < max(1, len(deltas) // 2):
+            score -= 15
+            reasons.append("walk_forward_instability")
+    else:
+        score -= 10
+        reasons.append("missing_walk_forward")
+
+    synthetic_weight = 0.0
+    for k, src in feature_sources.items():
+        w = float((baseline.get("weights") or {}).get(k, 0.0) or 0.0)
+        if not str(src).startswith("live"):
+            synthetic_weight += w
+    if synthetic_weight > 0.5:
+        score -= 25
+        reasons.append("high_synthetic_feature_share")
+
+    score = max(0, min(100, score))
+    tier = "green" if score >= 75 else ("yellow" if score >= 50 else "red")
+
+    return {
+        "score": score,
+        "tier": tier,
+        "reasons": reasons,
+        "checks": {
+            "baseline_trades": b_trades,
+            "baseline_drawdown": b_dd,
+            "baseline_win_rate": b_wr,
+            "synthetic_weight_share": synthetic_weight,
+            "walk_forward_windows": len(walk_forward),
+        },
+    }
+
+
+def write_live_readiness_md(path: Path, payload: Dict) -> None:
+    lines = ["# Live Readiness Gate", ""]
+    lines.append(f"- score={payload.get('score', 0)}/100")
+    lines.append(f"- tier={payload.get('tier', 'red')}")
+    lines.append(f"- reasons={payload.get('reasons', [])}")
+    checks = payload.get("checks") or {}
+    lines.append("")
+    lines.append("## Checks")
+    for k, v in checks.items():
+        lines.append(f"- {k}={v}")
+    lines.append("")
+    if payload.get("tier") != "green":
+        lines.append("- ⚠️ Not live-ready: continue paper testing and improve weak checks.")
+    else:
+        lines.append("- ✅ Candidate live-ready (still require supervised rollout).")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def write_live_readiness_json(path: Path, payload: Dict) -> None:
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
 def write_run_summary_md(path: Path, report: Dict) -> None:
     baseline = report.get("baseline") or {}
     top = (report.get("top10") or [{}])[0]
@@ -1297,6 +1397,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     walk_forward = report.get("walk_forward") or []
     multi_line_baseline = report.get("multi_line_baseline") or {}
     feature_sources = report.get("feature_sources") or {}
+    live_readiness = report.get("live_readiness") or {}
 
     lines = []
     lines.append("# Backtest Run Summary")
@@ -1419,6 +1520,16 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
         lines.append("- Feature sources not provided.")
 
     lines.append("")
+    lines.append("## Live readiness gate")
+    lines.append("")
+    if live_readiness:
+        lines.append(f"- score={live_readiness.get('score',0)}/100")
+        lines.append(f"- tier={live_readiness.get('tier','red')}")
+        lines.append(f"- reasons={live_readiness.get('reasons',[])}")
+    else:
+        lines.append("- No readiness assessment generated.")
+
+    lines.append("")
     lines.append("## Multi-line baseline")
     lines.append("")
     if multi_line_baseline:
@@ -1520,6 +1631,7 @@ def main():
                 "multi_line_baseline": multi_line_baseline,
         "feature_sources": feature_sources,
                 "feature_sources": feature_sources,
+                "live_readiness": compute_live_readiness({"baseline": baseline_result, "holdout": holdout_report, "walk_forward": walk_forward, "feature_sources": feature_sources}),
             },
             f,
             indent=2,
@@ -1531,7 +1643,7 @@ def main():
     write_leaderboard_csv(leaderboard_csv, leaderboard)
     write_category_csv(category_csv, leaderboard)
 
-    summary_report = {
+    temp_report = {
         "timestamp_utc": ts,
         "top10": leaderboard[:10],
         "baseline": baseline_result,
@@ -1545,6 +1657,8 @@ def main():
         "multi_line_baseline": multi_line_baseline,
         "feature_sources": feature_sources,
     }
+    live_readiness = compute_live_readiness(temp_report)
+    summary_report = {**temp_report, "live_readiness": live_readiness}
     write_run_summary_md(summary_md, summary_report)
 
     live_reco_md = outdir / f"backtest_{ts}_live_recommendation.md"
@@ -1560,6 +1674,8 @@ def main():
     data_quality_md = outdir / f"backtest_{ts}_data_quality.md"
     feature_sources_md = outdir / f"backtest_{ts}_feature_sources.md"
     feature_sources_json = outdir / f"backtest_{ts}_feature_sources.json"
+    live_readiness_md = outdir / f"backtest_{ts}_live_readiness.md"
+    live_readiness_json = outdir / f"backtest_{ts}_live_readiness.json"
     write_live_recommendation_md(live_reco_md, live_recommendation)
     write_live_profile_json(live_profile_json, live_profile)
     write_holdout_md(holdout_md, holdout_report)
@@ -1573,6 +1689,8 @@ def main():
     write_data_quality_md(data_quality_md, dataset_meta, baseline_result, holdout_report)
     write_feature_sources_md(feature_sources_md, feature_sources, cfg.get("weights", {}))
     write_feature_sources_json(feature_sources_json, feature_sources, cfg.get("weights", {}))
+    write_live_readiness_md(live_readiness_md, summary_report.get("live_readiness", {}))
+    write_live_readiness_json(live_readiness_json, summary_report.get("live_readiness", {}))
 
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
@@ -1591,6 +1709,8 @@ def main():
     print(f"Wrote data quality MD: {data_quality_md}")
     print(f"Wrote feature sources MD: {feature_sources_md}")
     print(f"Wrote feature sources JSON: {feature_sources_json}")
+    print(f"Wrote live readiness MD: {live_readiness_md}")
+    print(f"Wrote live readiness JSON: {live_readiness_json}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
     if leaderboard:
