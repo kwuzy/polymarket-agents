@@ -1293,6 +1293,7 @@ def compute_live_readiness(report: Dict) -> Dict:
     walk_forward = report.get("walk_forward") or []
     feature_sources = report.get("feature_sources") or {}
     live_readiness = report.get("live_readiness") or {}
+    decision_card = report.get("decision_card") or {}
 
     score = 100
     reasons = []
@@ -1385,6 +1386,88 @@ def write_live_readiness_json(path: Path, payload: Dict) -> None:
         json.dump(payload, f, indent=2)
 
 
+
+
+def build_deployment_decision_card(report: Dict) -> Dict:
+    baseline = report.get("baseline") or {}
+    holdout = report.get("holdout") or {}
+    live_readiness = report.get("live_readiness") or {}
+    decision_card = report.get("decision_card") or {}
+    live_profile = report.get("live_profile") or {}
+
+    hb = holdout.get("test_best") or {}
+    hbase = holdout.get("test_baseline") or {}
+    holdout_delta = float(hb.get("pnl", 0.0)) - float(hbase.get("pnl", 0.0)) if hb and hbase else 0.0
+
+    readiness_tier = live_readiness.get("tier", "red")
+    recommendation = "NO_GO"
+    if readiness_tier == "green":
+        recommendation = "GO_PAPER"
+    elif readiness_tier == "yellow":
+        recommendation = "PAPER_ONLY"
+
+    next_actions = [
+        "Run forward paper test for at least 2 weeks with identical risk controls.",
+        "Track realized slippage vs modeled slippage and recalibrate slippage_model.",
+        "Require manual approval before any live capital deployment.",
+    ]
+
+    return {
+        "recommendation": recommendation,
+        "readiness_tier": readiness_tier,
+        "readiness_score": live_readiness.get("score", 0),
+        "headline": {
+            "baseline_pnl": baseline.get("pnl", 0.0),
+            "baseline_win_rate": baseline.get("win_rate", 0.0),
+            "baseline_trades": baseline.get("trades", 0),
+            "holdout_delta_pnl": holdout_delta,
+        },
+        "risk_flags": live_readiness.get("reasons", []),
+        "profile_snapshot": {
+            "weights": live_profile.get("weights", {}),
+            "execution": live_profile.get("execution", {}),
+            "risk": live_profile.get("risk", {}),
+        },
+        "next_actions": next_actions,
+    }
+
+
+def write_deployment_decision_card_md(path: Path, payload: Dict) -> None:
+    lines = ["# Deployment Decision Card", ""]
+    lines.append(f"- recommendation={payload.get('recommendation', 'NO_GO')}")
+    lines.append(f"- readiness_tier={payload.get('readiness_tier', 'red')}")
+    lines.append(f"- readiness_score={payload.get('readiness_score', 0)}")
+    head = payload.get("headline") or {}
+    lines.append("")
+    lines.append("## Headline metrics")
+    lines.append(f"- baseline_pnl={head.get('baseline_pnl', 0.0):.4f}")
+    lines.append(f"- baseline_win_rate={head.get('baseline_win_rate', 0.0):.3f}")
+    lines.append(f"- baseline_trades={head.get('baseline_trades', 0)}")
+    lines.append(f"- holdout_delta_pnl={head.get('holdout_delta_pnl', 0.0):.4f}")
+
+    lines.append("")
+    lines.append("## Risk flags")
+    flags = payload.get("risk_flags") or []
+    if flags:
+        for f in flags:
+            lines.append(f"- {f}")
+    else:
+        lines.append("- none")
+
+    lines.append("")
+    lines.append("## Next actions")
+    for a in payload.get("next_actions", []):
+        lines.append(f"- {a}")
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def write_deployment_decision_card_json(path: Path, payload: Dict) -> None:
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
 def write_run_summary_md(path: Path, report: Dict) -> None:
     baseline = report.get("baseline") or {}
     top = (report.get("top10") or [{}])[0]
@@ -1398,6 +1481,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     multi_line_baseline = report.get("multi_line_baseline") or {}
     feature_sources = report.get("feature_sources") or {}
     live_readiness = report.get("live_readiness") or {}
+    decision_card = report.get("decision_card") or {}
 
     lines = []
     lines.append("# Backtest Run Summary")
@@ -1530,6 +1614,15 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
         lines.append("- No readiness assessment generated.")
 
     lines.append("")
+    lines.append("## Deployment decision")
+    lines.append("")
+    if decision_card:
+        lines.append(f"- recommendation={decision_card.get('recommendation','NO_GO')}")
+        lines.append(f"- readiness_tier={decision_card.get('readiness_tier','red')}")
+    else:
+        lines.append("- No deployment decision card generated.")
+
+    lines.append("")
     lines.append("## Multi-line baseline")
     lines.append("")
     if multi_line_baseline:
@@ -1632,6 +1725,7 @@ def main():
         "feature_sources": feature_sources,
                 "feature_sources": feature_sources,
                 "live_readiness": compute_live_readiness({"baseline": baseline_result, "holdout": holdout_report, "walk_forward": walk_forward, "feature_sources": feature_sources}),
+                "decision_card": build_deployment_decision_card({"baseline": baseline_result, "holdout": holdout_report, "live_profile": live_profile, "live_readiness": compute_live_readiness({"baseline": baseline_result, "holdout": holdout_report, "walk_forward": walk_forward, "feature_sources": feature_sources})}),
             },
             f,
             indent=2,
@@ -1658,7 +1752,8 @@ def main():
         "feature_sources": feature_sources,
     }
     live_readiness = compute_live_readiness(temp_report)
-    summary_report = {**temp_report, "live_readiness": live_readiness}
+    decision_card = build_deployment_decision_card({**temp_report, "live_readiness": live_readiness})
+    summary_report = {**temp_report, "live_readiness": live_readiness, "decision_card": decision_card}
     write_run_summary_md(summary_md, summary_report)
 
     live_reco_md = outdir / f"backtest_{ts}_live_recommendation.md"
@@ -1676,6 +1771,8 @@ def main():
     feature_sources_json = outdir / f"backtest_{ts}_feature_sources.json"
     live_readiness_md = outdir / f"backtest_{ts}_live_readiness.md"
     live_readiness_json = outdir / f"backtest_{ts}_live_readiness.json"
+    decision_card_md = outdir / f"backtest_{ts}_decision_card.md"
+    decision_card_json = outdir / f"backtest_{ts}_decision_card.json"
     write_live_recommendation_md(live_reco_md, live_recommendation)
     write_live_profile_json(live_profile_json, live_profile)
     write_holdout_md(holdout_md, holdout_report)
@@ -1691,6 +1788,8 @@ def main():
     write_feature_sources_json(feature_sources_json, feature_sources, cfg.get("weights", {}))
     write_live_readiness_md(live_readiness_md, summary_report.get("live_readiness", {}))
     write_live_readiness_json(live_readiness_json, summary_report.get("live_readiness", {}))
+    write_deployment_decision_card_md(decision_card_md, summary_report.get("decision_card", {}))
+    write_deployment_decision_card_json(decision_card_json, summary_report.get("decision_card", {}))
 
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
@@ -1711,6 +1810,8 @@ def main():
     print(f"Wrote feature sources JSON: {feature_sources_json}")
     print(f"Wrote live readiness MD: {live_readiness_md}")
     print(f"Wrote live readiness JSON: {live_readiness_json}")
+    print(f"Wrote decision card MD: {decision_card_md}")
+    print(f"Wrote decision card JSON: {decision_card_json}")
     if comparison_csv:
         print(f"Wrote mode comparison CSV: {comparison_csv}")
     if leaderboard:

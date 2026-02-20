@@ -163,3 +163,9 @@ Live readiness gate outputs are emitted to:
 - `backtest_<timestamp>_live_readiness.json`
 
 The readiness score combines baseline quality, holdout/walk-forward robustness, and feature-source realism (live vs synthetic share).
+
+Deployment decision artifacts are emitted to:
+- `backtest_<timestamp>_decision_card.md`
+- `backtest_<timestamp>_decision_card.json`
+
+These summarize GO/PAPER/NO-GO posture from readiness + robustness signals for supervised rollout decisions.
