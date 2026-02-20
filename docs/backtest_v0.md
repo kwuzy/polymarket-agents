@@ -175,3 +175,7 @@ Guardrail alert artifacts are emitted to:
 - `backtest_<timestamp>_guardrail_alerts.json`
 
 Configure thresholds in `validation.guardrail_alerts` (`max_drawdown`, `min_trades`, `min_win_rate`, `min_readiness_score`).
+
+Run registry outputs:
+- `backtest_<timestamp>_manifest.json` (artifact map + decision signals)
+- `backtest_run_index.csv` (append-only index across runs)

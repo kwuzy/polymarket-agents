@@ -1718,6 +1718,34 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+
+
+def append_run_index_csv(path: Path, row: Dict) -> None:
+    fieldnames = [
+        "timestamp_utc",
+        "run_json",
+        "summary_md",
+        "leaderboard_csv",
+        "mode_compare_csv",
+        "readiness_score",
+        "readiness_tier",
+        "decision",
+        "guardrail_blocked",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exists = path.exists()
+    with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not exists:
+            writer.writeheader()
+        writer.writerow({k: row.get(k, "") for k in fieldnames})
+
+
+def write_run_manifest_json(path: Path, payload: Dict) -> None:
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Deterministic Polymarket backtest runner")
     parser.add_argument("--config", default="configs/backtest_v0.json")
@@ -1789,6 +1817,7 @@ def main():
     feature_sources = signal_source_map(cfg)
 
     full_path = outdir / f"backtest_{ts}.json"
+    run_manifest_json = outdir / f"backtest_{ts}_manifest.json"
     with open(full_path, "w") as f:
         json.dump(
             {
@@ -1879,10 +1908,50 @@ def main():
     write_guardrail_alerts_md(guardrail_alerts_md, summary_report.get("guardrail_alerts", {}))
     write_guardrail_alerts_json(guardrail_alerts_json, summary_report.get("guardrail_alerts", {}))
 
+    manifest_payload = {
+        "timestamp_utc": ts,
+        "artifacts": {
+            "run_json": str(full_path),
+            "summary_md": str(summary_md),
+            "leaderboard_csv": str(leaderboard_csv),
+            "category_csv": str(category_csv),
+            "mode_compare_csv": str(comparison_csv) if comparison_csv else "",
+            "live_profile_json": str(live_profile_json),
+            "live_readiness_json": str(live_readiness_json),
+            "decision_card_json": str(decision_card_json),
+            "guardrail_alerts_json": str(guardrail_alerts_json),
+        },
+        "signals": {
+            "readiness_score": (summary_report.get("live_readiness") or {}).get("score", 0),
+            "readiness_tier": (summary_report.get("live_readiness") or {}).get("tier", "red"),
+            "decision": (summary_report.get("decision_card") or {}).get("recommendation", "NO_GO"),
+            "guardrail_blocked": (summary_report.get("guardrail_alerts") or {}).get("blocked", False),
+        },
+    }
+    write_run_manifest_json(run_manifest_json, manifest_payload)
+
+    run_index_csv = outdir / "backtest_run_index.csv"
+    append_run_index_csv(
+        run_index_csv,
+        {
+            "timestamp_utc": ts,
+            "run_json": str(full_path),
+            "summary_md": str(summary_md),
+            "leaderboard_csv": str(leaderboard_csv),
+            "mode_compare_csv": str(comparison_csv) if comparison_csv else "",
+            "readiness_score": manifest_payload["signals"]["readiness_score"],
+            "readiness_tier": manifest_payload["signals"]["readiness_tier"],
+            "decision": manifest_payload["signals"]["decision"],
+            "guardrail_blocked": manifest_payload["signals"]["guardrail_blocked"],
+        },
+    )
+
     print(f"Wrote report: {full_path}")
     print(f"Wrote leaderboard CSV: {leaderboard_csv}")
     print(f"Wrote category CSV: {category_csv}")
     print(f"Wrote summary MD: {summary_md}")
+    print(f"Wrote run manifest JSON: {run_manifest_json}")
+    print(f"Updated run index CSV: {outdir / 'backtest_run_index.csv'}")
     print(f"Wrote live recommendation MD: {live_reco_md}")
     print(f"Wrote live profile JSON: {live_profile_json}")
     print(f"Wrote holdout MD: {holdout_md}")
