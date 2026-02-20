@@ -77,6 +77,12 @@
       "train_size": 250,
       "test_size": 60,
       "step_size": 60
+    },
+    "guardrail_alerts": {
+      "max_drawdown": 0.2,
+      "min_trades": 20,
+      "min_win_rate": 0.45,
+      "min_readiness_score": 75
     }
   },
   "features": {
