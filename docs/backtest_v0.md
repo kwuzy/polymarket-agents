@@ -108,7 +108,7 @@ Validation split is configurable via `validation.holdout_fraction` (default 0.25
 Blocked fold robustness is configurable with `validation.folds` and exported to:
 - `backtest_<timestamp>_fold_robustness.csv`
 - `backtest_<timestamp>_fold_robustness.md`
-- `backtest_<timestamp>_multiline.md`
+- `backtest_<timestamp>_multiline.md` (per-line trades/pnl/avg risk + concentration metric)
 
 Cost sensitivity scenarios are configurable under `validation.cost_scenarios` and exported to:
 - `backtest_<timestamp>_cost_scenarios.csv`

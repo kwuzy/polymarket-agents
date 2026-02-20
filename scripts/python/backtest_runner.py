@@ -269,6 +269,9 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
     line_steps = []
     line_peaks = []
     line_loss_streaks = []
+    line_trade_counts = []
+    line_pnls = []
+    line_risk_sums = []
     line_assignment = exec_cfg.get("line_assignment", "round_robin")
 
     if mode == "multi_line":
@@ -278,6 +281,9 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         line_steps = [0 for _ in range(num_lines)]
         line_peaks = [per_line for _ in range(num_lines)]
         line_loss_streaks = [0 for _ in range(num_lines)]
+        line_trade_counts = [0 for _ in range(num_lines)]
+        line_pnls = [0.0 for _ in range(num_lines)]
+        line_risk_sums = [0.0 for _ in range(num_lines)]
 
     results: List[TradeResult] = []
     by_category = {}
@@ -354,6 +360,9 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         pnl = gross - fee - slippage
 
         if mode == "multi_line":
+            line_trade_counts[line_idx] += 1
+            line_pnls[line_idx] += pnl
+            line_risk_sums[line_idx] += risk_amount
             line_bankrolls[line_idx] += pnl
             line_peaks[line_idx] = max(line_peaks[line_idx], line_bankrolls[line_idx])
             if won:
@@ -444,6 +453,9 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
             "line_assignment": line_assignment,
             "line_bankrolls": line_bankrolls,
             "line_steps": line_steps,
+            "line_trade_counts": line_trade_counts,
+            "line_pnls": line_pnls,
+            "line_risk_sums": line_risk_sums,
         }
     return out
 
@@ -751,12 +763,23 @@ def write_multiline_md(path: Path, baseline_multi: Dict) -> None:
         lines.append(f"- baseline_trades={baseline_multi.get('trades',0)}")
         banks = ls.get("line_bankrolls", [])
         steps = ls.get("line_steps", [])
+        counts = ls.get("line_trade_counts", [])
+        pnls = ls.get("line_pnls", [])
+        risks = ls.get("line_risk_sums", [])
         if banks:
             lines.append("")
-            lines.append("## Per-line ending bankrolls")
+            lines.append("## Per-line stats")
+            total_trades = sum(counts) if counts else 0
+            if total_trades > 0:
+                hhi = sum(((c / total_trades) ** 2) for c in counts)
+                lines.append(f"- line_trade_concentration_hhi={hhi:.4f} (lower is more balanced)")
             for i, b in enumerate(banks, start=1):
                 st = steps[i-1] if i-1 < len(steps) else 0
-                lines.append(f"- line_{i}: bankroll={b:.4f}, ladder_step={st}")
+                c = counts[i-1] if i-1 < len(counts) else 0
+                p = pnls[i-1] if i-1 < len(pnls) else 0.0
+                r = risks[i-1] if i-1 < len(risks) else 0.0
+                avg_r = (r / c) if c else 0.0
+                lines.append(f"- line_{i}: trades={c}, pnl={p:.4f}, avg_risk={avg_r:.4f}, bankroll={b:.4f}, ladder_step={st}")
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
