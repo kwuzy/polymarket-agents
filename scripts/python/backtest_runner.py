@@ -83,6 +83,55 @@ def parse_spread(market: Dict) -> float:
         return 1.0
 
 
+def parse_volume_num(market: Dict) -> float:
+    for key in ["volumeNum", "volume", "volume24hr", "liquidityNum", "liquidity"]:
+        raw = market.get(key)
+        try:
+            val = float(raw)
+            if val >= 0:
+                return val
+        except Exception:
+            continue
+    return 0.0
+
+
+def parse_liquidity_num(market: Dict) -> float:
+    for key in ["liquidityNum", "liquidity", "volumeNum", "volume"]:
+        raw = market.get(key)
+        try:
+            val = float(raw)
+            if val >= 0:
+                return val
+        except Exception:
+            continue
+    return 0.0
+
+
+def compute_effective_slippage_bps(market: Dict, risk_amount: float, exec_cfg: Dict) -> float:
+    base = float(exec_cfg.get("slippage_bps", 0) or 0)
+    model = exec_cfg.get("slippage_model", {}) or {}
+    if not model.get("enabled", False):
+        return base
+
+    spread = parse_spread(market)
+    volume = parse_volume_num(market)
+    liquidity = parse_liquidity_num(market)
+
+    spread_mult = max(0.25, min(3.0, 1.0 + spread * float(model.get("spread_weight", 0.5))))
+
+    depth_ref = float(model.get("depth_reference_usdc", 50000.0) or 50000.0)
+    depth_proxy = max(1.0, volume + liquidity)
+    depth_mult = max(0.5, min(3.0, depth_ref / (depth_proxy + depth_ref)))
+
+    impact_ref = float(model.get("impact_reference_usdc", 50.0) or 50.0)
+    impact_power = float(model.get("impact_power", 0.5) or 0.5)
+    impact_mult = max(0.5, min(3.0, (max(risk_amount, 0.01) / impact_ref) ** impact_power))
+
+    eff = base * spread_mult * depth_mult * impact_mult
+    cap = float(model.get("max_slippage_bps", max(10.0, base * 4.0)) or max(10.0, base * 4.0))
+    return max(0.0, min(cap, eff))
+
+
 def infer_category_from_text(text: str) -> str:
     t = (text or "").lower()
     keyword_map = {
@@ -286,6 +335,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         line_risk_sums = [0.0 for _ in range(num_lines)]
 
     results: List[TradeResult] = []
+    effective_slippage_bps_sum = 0.0
     by_category = {}
     diagnostics = {
         "total_markets": 0,
@@ -293,6 +343,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         "skipped_filter": 0,
         "skipped_no_edge": 0,
         "skipped_invalid_price": 0,
+        "avg_effective_slippage_bps": 0.0,
     }
 
     ordered = sorted(snapshot, key=lambda m: int(m.get("id", 0)))
@@ -356,8 +407,11 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         gross = shares * ((1 - price) if won else -price)
 
         fee = abs(gross) * (exec_cfg.get("fee_bps", 0) / 10_000)
-        slippage = abs(gross) * (exec_cfg.get("slippage_bps", 0) / 10_000)
+        eff_slippage_bps = compute_effective_slippage_bps(market, risk_amount, exec_cfg)
+        slippage = abs(gross) * (eff_slippage_bps / 10_000)
         pnl = gross - fee - slippage
+
+        effective_slippage_bps_sum += eff_slippage_bps
 
         if mode == "multi_line":
             line_trade_counts[line_idx] += 1
@@ -445,6 +499,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
             **diagnostics,
             "executed_trades": total,
             "execution_rate": (total / diagnostics["candidate_markets"]) if diagnostics["candidate_markets"] else 0.0,
+            "avg_effective_slippage_bps": (effective_slippage_bps_sum / total) if total else 0.0,
         },
     }
     if mode == "multi_line":

@@ -132,3 +132,18 @@ Walk-forward robustness is configurable under `validation.walk_forward` and expo
 - `backtest_<timestamp>_walk_forward.md`
 
 This includes candidate/executed counts, skip reasons, execution rate, and a warning when holdout executes zero baseline trades.
+
+
+### Slippage/liquidity stress model
+
+Execution slippage supports an optional dynamic model under `execution.slippage_model`:
+
+- `enabled`: turn dynamic slippage on/off
+- `spread_weight`: increases slippage as spread widens
+- `depth_reference_usdc`: liquidity/volume reference for depth penalty
+- `impact_reference_usdc`: trade-size reference for impact scaling
+- `impact_power`: non-linear size impact exponent
+- `max_slippage_bps`: cap on effective per-trade slippage
+
+When enabled, effective slippage bps are derived from base `execution.slippage_bps` and scaled by spread, depth proxy, and trade size.
+Run diagnostics now include `avg_effective_slippage_bps`.
