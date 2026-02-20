@@ -105,6 +105,16 @@ A guardrail-aware live profile recommendation is produced from `single_ladder` r
 
 Validation split is configurable via `validation.holdout_fraction` (default 0.25), and holdout robustness is emitted to `backtest_<timestamp>_holdout.md`.
 
+
+Walk-forward config fields:
+- `validation.walk_forward.enabled`
+- `validation.walk_forward.train_size`
+- `validation.walk_forward.test_size`
+- `validation.walk_forward.step_size`
+
+Each window trains on `[start:start+train_size)` and evaluates on the immediately following test slice, then advances by `step_size`.
+
+
 Blocked fold robustness is configurable with `validation.folds` and exported to:
 - `backtest_<timestamp>_fold_robustness.csv`
 - `backtest_<timestamp>_fold_robustness.md`
@@ -116,5 +126,9 @@ Cost sensitivity scenarios are configurable under `validation.cost_scenarios` an
 
 Data quality diagnostics are exported to:
 - `backtest_<timestamp>_data_quality.md`
+
+Walk-forward robustness is configurable under `validation.walk_forward` and exported to:
+- `backtest_<timestamp>_walk_forward.csv`
+- `backtest_<timestamp>_walk_forward.md`
 
 This includes candidate/executed counts, skip reasons, execution rate, and a warning when holdout executes zero baseline trades.

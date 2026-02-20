@@ -38,10 +38,32 @@
     "holdout_fraction": 0.25,
     "folds": 4,
     "cost_scenarios": [
-      {"label": "ideal", "fee_bps": 0, "slippage_bps": 0},
-      {"label": "light_cost", "fee_bps": 5, "slippage_bps": 5},
-      {"label": "moderate_cost", "fee_bps": 10, "slippage_bps": 15},
-      {"label": "stress_cost", "fee_bps": 20, "slippage_bps": 25}
-    ]
+      {
+        "label": "ideal",
+        "fee_bps": 0,
+        "slippage_bps": 0
+      },
+      {
+        "label": "light_cost",
+        "fee_bps": 5,
+        "slippage_bps": 5
+      },
+      {
+        "label": "moderate_cost",
+        "fee_bps": 10,
+        "slippage_bps": 15
+      },
+      {
+        "label": "stress_cost",
+        "fee_bps": 20,
+        "slippage_bps": 25
+      }
+    ],
+    "walk_forward": {
+      "enabled": true,
+      "train_size": 250,
+      "test_size": 60,
+      "step_size": 60
+    }
   }
 }

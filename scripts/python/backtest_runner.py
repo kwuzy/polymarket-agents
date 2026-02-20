@@ -909,6 +909,140 @@ def write_fold_robustness_md(path: Path, folds: List[Dict]) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+
+
+def build_walk_forward_windows(snapshot: List[Dict], train_size: int, test_size: int, step_size: int) -> List[Tuple[List[Dict], List[Dict]]]:
+    if train_size <= 0 or test_size <= 0 or step_size <= 0:
+        return []
+    if len(snapshot) < (train_size + test_size):
+        return []
+
+    out = []
+    start = 0
+    n = len(snapshot)
+    while True:
+        train_end = start + train_size
+        test_end = train_end + test_size
+        if test_end > n:
+            break
+        train = snapshot[start:train_end]
+        test = snapshot[train_end:test_end]
+        if train and test:
+            out.append((train, test))
+        start += step_size
+    return out
+
+
+def evaluate_walk_forward(snapshot: List[Dict], cfg: Dict, mode: str = "single_ladder") -> List[Dict]:
+    wf_cfg = (cfg.get("validation", {}) or {}).get("walk_forward", {}) or {}
+    if not wf_cfg.get("enabled", False):
+        return []
+
+    train_size = int(wf_cfg.get("train_size", 0) or 0)
+    test_size = int(wf_cfg.get("test_size", 0) or 0)
+    step_size = int(wf_cfg.get("step_size", test_size or 0) or 0)
+
+    windows = build_walk_forward_windows(snapshot, train_size, test_size, step_size)
+    if not windows:
+        return []
+
+    out = []
+    for i, (train, test) in enumerate(windows, start=1):
+        board = run_mode_pass(train, cfg, force_mode=mode)
+        if not board:
+            continue
+
+        best_train = board[0]
+        baseline_train = next((x for x in board if x["weights"] == cfg["weights"]), None)
+
+        cfg_local = json.loads(json.dumps(cfg))
+        cfg_local.setdefault("execution", {})["mode"] = mode
+        if mode == "single_ladder":
+            cfg_local["execution"]["max_concurrent_ladders"] = 1
+
+        best_test = run_backtest(test, cfg_local, best_train["weights"])
+        baseline_test = run_backtest(test, cfg_local, cfg["weights"])
+
+        out.append(
+            {
+                "window": i,
+                "train_start": (i - 1) * step_size,
+                "train_end": (i - 1) * step_size + len(train),
+                "test_end": (i - 1) * step_size + len(train) + len(test),
+                "train_size": len(train),
+                "test_size": len(test),
+                "train_best": best_train,
+                "train_baseline": baseline_train,
+                "test_best": best_test,
+                "test_baseline": baseline_test,
+            }
+        )
+    return out
+
+
+def write_walk_forward_csv(path: Path, rows: List[Dict]) -> None:
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "window",
+                "train_start",
+                "train_end",
+                "test_end",
+                "train_size",
+                "test_size",
+                "test_best_pnl",
+                "test_best_win_rate",
+                "test_best_trades",
+                "test_baseline_pnl",
+                "test_baseline_win_rate",
+                "test_baseline_trades",
+                "delta_pnl",
+            ],
+        )
+        writer.writeheader()
+        for r in rows:
+            tb = r.get("test_best") or {}
+            bl = r.get("test_baseline") or {}
+            writer.writerow(
+                {
+                    "window": r.get("window"),
+                    "train_start": r.get("train_start"),
+                    "train_end": r.get("train_end"),
+                    "test_end": r.get("test_end"),
+                    "train_size": r.get("train_size"),
+                    "test_size": r.get("test_size"),
+                    "test_best_pnl": tb.get("pnl", 0.0),
+                    "test_best_win_rate": tb.get("win_rate", 0.0),
+                    "test_best_trades": tb.get("trades", 0),
+                    "test_baseline_pnl": bl.get("pnl", 0.0),
+                    "test_baseline_win_rate": bl.get("win_rate", 0.0),
+                    "test_baseline_trades": bl.get("trades", 0),
+                    "delta_pnl": tb.get("pnl", 0.0) - bl.get("pnl", 0.0),
+                }
+            )
+
+
+def write_walk_forward_md(path: Path, rows: List[Dict]) -> None:
+    lines = ["# Walk-Forward Robustness", ""]
+    if not rows:
+        lines.append("Walk-forward disabled or insufficient data/windows.")
+    else:
+        deltas = []
+        for r in rows:
+            tb = r.get("test_best") or {}
+            bl = r.get("test_baseline") or {}
+            delta = tb.get("pnl", 0.0) - bl.get("pnl", 0.0)
+            deltas.append(delta)
+            lines.append(
+                f"- window {r.get('window')}: test_best_pnl={tb.get('pnl',0.0):.4f}, test_baseline_pnl={bl.get('pnl',0.0):.4f}, delta={delta:.4f}, best_trades={tb.get('trades',0)}, baseline_trades={bl.get('trades',0)}"
+            )
+        lines.append("")
+        lines.append(f"- Positive delta windows: {sum(1 for d in deltas if d > 0)}/{len(deltas)}")
+        lines.append(f"- Avg delta pnl: {sum(deltas)/len(deltas):.4f}")
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
 def choose_live_recommendation(results: List[Dict]) -> Dict:
     """Pick a guardrail-aware profile from single_ladder results.
 
@@ -992,6 +1126,7 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     holdout = report.get("holdout") or {}
     cost_scenarios = report.get("cost_scenarios") or []
     fold_robustness = report.get("fold_robustness") or []
+    walk_forward = report.get("walk_forward") or []
     multi_line_baseline = report.get("multi_line_baseline") or {}
 
     lines = []
@@ -1079,6 +1214,22 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
         lines.append("- Fold validation disabled or insufficient data.")
 
     lines.append("")
+    lines.append("## Walk-forward robustness")
+    lines.append("")
+    if walk_forward:
+        wf_deltas = []
+        for r in walk_forward:
+            tb = r.get("test_best") or {}
+            bl = r.get("test_baseline") or {}
+            delta = tb.get("pnl", 0.0) - bl.get("pnl", 0.0)
+            wf_deltas.append(delta)
+            lines.append(f"- window {r.get('window')}: delta_pnl={delta:.4f}, best_trades={tb.get('trades',0)}, baseline_trades={bl.get('trades',0)}")
+        lines.append(f"- positive windows: {sum(1 for d in wf_deltas if d > 0)}/{len(wf_deltas)}")
+        lines.append(f"- avg delta pnl: {sum(wf_deltas)/len(wf_deltas):.4f}")
+    else:
+        lines.append("- Walk-forward disabled or insufficient windows.")
+
+    lines.append("")
     lines.append("## Multi-line baseline")
     lines.append("")
     if multi_line_baseline:
@@ -1150,6 +1301,7 @@ def main():
 
     fold_count = int(cfg.get("validation", {}).get("folds", 0) or 0)
     fold_robustness = evaluate_fold_robustness(snapshot, cfg, fold_count, mode="single_ladder")
+    walk_forward = evaluate_walk_forward(snapshot, cfg, mode="single_ladder")
 
     dataset_meta = {
         "total_markets": len(snapshot),
@@ -1173,6 +1325,7 @@ def main():
                 "holdout": holdout_report,
                 "cost_scenarios": cost_scenarios,
                 "fold_robustness": fold_robustness,
+                "walk_forward": walk_forward,
                 "multi_line_baseline": multi_line_baseline,
             },
             f,
@@ -1194,6 +1347,7 @@ def main():
         "holdout": holdout_report,
         "cost_scenarios": cost_scenarios,
         "fold_robustness": fold_robustness,
+        "walk_forward": walk_forward,
         "multi_line_baseline": multi_line_baseline,
     }
     write_run_summary_md(summary_md, summary_report)
@@ -1205,6 +1359,8 @@ def main():
     fold_csv = outdir / f"backtest_{ts}_fold_robustness.csv"
     fold_md = outdir / f"backtest_{ts}_fold_robustness.md"
     multiline_md = outdir / f"backtest_{ts}_multiline.md"
+    walk_forward_csv = outdir / f"backtest_{ts}_walk_forward.csv"
+    walk_forward_md = outdir / f"backtest_{ts}_walk_forward.md"
     data_quality_md = outdir / f"backtest_{ts}_data_quality.md"
     write_live_recommendation_md(live_reco_md, live_recommendation)
     write_holdout_md(holdout_md, holdout_report)
@@ -1212,6 +1368,8 @@ def main():
     write_cost_scenarios_md(cost_md, cost_scenarios)
     write_fold_robustness_csv(fold_csv, fold_robustness)
     write_fold_robustness_md(fold_md, fold_robustness)
+    write_walk_forward_csv(walk_forward_csv, walk_forward)
+    write_walk_forward_md(walk_forward_md, walk_forward)
     write_multiline_md(multiline_md, multi_line_baseline)
     write_data_quality_md(data_quality_md, dataset_meta, baseline_result, holdout_report)
 
@@ -1225,6 +1383,8 @@ def main():
     print(f"Wrote cost scenarios MD: {cost_md}")
     print(f"Wrote fold robustness CSV: {fold_csv}")
     print(f"Wrote fold robustness MD: {fold_md}")
+    print(f"Wrote walk-forward CSV: {walk_forward_csv}")
+    print(f"Wrote walk-forward MD: {walk_forward_md}")
     print(f"Wrote multi-line MD: {multiline_md}")
     print(f"Wrote data quality MD: {data_quality_md}")
     if comparison_csv:
