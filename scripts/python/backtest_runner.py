@@ -1750,7 +1750,18 @@ def write_run_manifest_json(path: Path, payload: Dict) -> None:
 
 def summarize_run_index(index_csv: Path, tail_n: int = 20) -> Dict:
     if not index_csv.exists():
-        return {"count": 0, "avg_readiness": 0.0, "decision_counts": {}, "blocked_rate": 0.0}
+        return {
+            "count": 0,
+            "avg_readiness": 0.0,
+            "decision_counts": {},
+            "blocked_rate": 0.0,
+            "recent_avg_readiness": 0.0,
+            "prior_avg_readiness": 0.0,
+            "readiness_delta": 0.0,
+            "recent_blocked_rate": 0.0,
+            "recent_decisions": [],
+            "trend_signal": "unknown",
+        }
 
     rows = []
     with open(index_csv, "r", newline="") as f:
@@ -1760,26 +1771,66 @@ def summarize_run_index(index_csv: Path, tail_n: int = 20) -> Dict:
 
     rows = rows[-tail_n:]
     if not rows:
-        return {"count": 0, "avg_readiness": 0.0, "decision_counts": {}, "blocked_rate": 0.0}
+        return {
+            "count": 0,
+            "avg_readiness": 0.0,
+            "decision_counts": {},
+            "blocked_rate": 0.0,
+            "recent_avg_readiness": 0.0,
+            "prior_avg_readiness": 0.0,
+            "readiness_delta": 0.0,
+            "recent_blocked_rate": 0.0,
+            "recent_decisions": [],
+            "trend_signal": "unknown",
+        }
 
     readiness_vals = []
     decision_counts = {}
     blocked = 0
+    blocked_flags = []
+    decisions_ordered = []
     for r in rows:
         try:
             readiness_vals.append(float(r.get("readiness_score", 0) or 0))
         except Exception:
             readiness_vals.append(0.0)
         d = r.get("decision", "") or ""
+        decisions_ordered.append(d)
         decision_counts[d] = decision_counts.get(d, 0) + 1
         blocked_flag = str(r.get("guardrail_blocked", "False")).lower() in {"1", "true", "yes"}
+        blocked_flags.append(blocked_flag)
         blocked += int(blocked_flag)
+
+    half = max(1, len(readiness_vals) // 2)
+    recent_readiness = readiness_vals[-half:]
+    prior_readiness = readiness_vals[:-half]
+    recent_avg = (sum(recent_readiness) / len(recent_readiness)) if recent_readiness else 0.0
+    prior_avg = (sum(prior_readiness) / len(prior_readiness)) if prior_readiness else recent_avg
+    delta = recent_avg - prior_avg
+
+    recent_blocked_flags = blocked_flags[-half:]
+    recent_blocked_rate = (
+        sum(1 for x in recent_blocked_flags if x) / len(recent_blocked_flags)
+        if recent_blocked_flags else 0.0
+    )
+
+    trend_signal = "stable"
+    if delta <= -7.5 or recent_blocked_rate >= 0.5:
+        trend_signal = "degrading"
+    elif delta >= 7.5 and recent_blocked_rate <= 0.2:
+        trend_signal = "improving"
 
     return {
         "count": len(rows),
         "avg_readiness": (sum(readiness_vals) / len(readiness_vals)) if readiness_vals else 0.0,
         "decision_counts": decision_counts,
         "blocked_rate": (blocked / len(rows)) if rows else 0.0,
+        "recent_avg_readiness": recent_avg,
+        "prior_avg_readiness": prior_avg,
+        "readiness_delta": delta,
+        "recent_blocked_rate": recent_blocked_rate,
+        "recent_decisions": decisions_ordered[-3:],
+        "trend_signal": trend_signal,
     }
 
 
@@ -1788,6 +1839,16 @@ def write_run_trends_md(path: Path, payload: Dict) -> None:
     lines.append(f"- sample_count={payload.get('count', 0)}")
     lines.append(f"- avg_readiness={payload.get('avg_readiness', 0.0):.2f}")
     lines.append(f"- blocked_rate={payload.get('blocked_rate', 0.0):.3f}")
+    lines.append(f"- recent_avg_readiness={payload.get('recent_avg_readiness', 0.0):.2f}")
+    lines.append(f"- prior_avg_readiness={payload.get('prior_avg_readiness', 0.0):.2f}")
+    lines.append(f"- readiness_delta={payload.get('readiness_delta', 0.0):+.2f}")
+    lines.append(f"- recent_blocked_rate={payload.get('recent_blocked_rate', 0.0):.3f}")
+    lines.append(f"- trend_signal={payload.get('trend_signal', 'unknown')}")
+
+    recent_decisions = payload.get("recent_decisions") or []
+    if recent_decisions:
+        lines.append(f"- recent_decisions={' -> '.join(recent_decisions)}")
+
     lines.append("")
     lines.append("## Decisions")
     dc = payload.get("decision_counts") or {}
@@ -1796,6 +1857,14 @@ def write_run_trends_md(path: Path, payload: Dict) -> None:
     else:
         for k, v in sorted(dc.items()):
             lines.append(f"- {k}: {v}")
+
+    if payload.get("trend_signal") == "degrading":
+        lines.append("")
+        lines.append("⚠️ Trend degrading: consider tightening risk caps and investigating recent guardrail failures.")
+    elif payload.get("trend_signal") == "improving":
+        lines.append("")
+        lines.append("✅ Trend improving: maintain current process and continue monitoring before promotion.")
+
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
