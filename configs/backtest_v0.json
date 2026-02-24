@@ -126,6 +126,18 @@
         "leaderboard_provider": "polymarket_data_api",
         "activity_cache": "data/whales/whale_activity.json"
       }
+    },
+    "real_signals": {
+      "enabled": false,
+      "windows_days": [
+        1,
+        7,
+        30
+      ],
+      "news_path": "data/signals/news_events.json",
+      "social_path": "data/signals/social_events.json",
+      "trade_events_path": "data/signals/trade_events.json",
+      "output_path": "outputs/backtests/real_signal_features.json"
     }
   }
 }
