@@ -54,10 +54,10 @@
   "validation": {
     "holdout_fraction": 0.25,
     "date_range": {
-      "enabled": false,
-      "field": "createdAt",
-      "start": null,
-      "end": null
+      "enabled": true,
+      "field": "updatedAt",
+      "start": "2026-01-01T00:00:00Z",
+      "end": "2026-12-31T23:59:59Z"
     },
     "folds": 4,
     "cost_scenarios": [
@@ -108,52 +108,16 @@
       "reddit": "synthetic_proxy",
       "trader": "synthetic_proxy"
     },
-    "whales": {
-      "enabled": false,
-      "windows_days": [
-        7,
-        30,
-        90
-      ],
-      "categories": [
-        "sports",
-        "politics",
-        "crypto",
-        "business"
-      ],
-      "top_n": 20,
-      "source": {
-        "leaderboard_provider": "polymarket_data_api",
-        "activity_cache": "data/whales/whale_activity.json"
-      }
-    },
     "real_signals": {
-      "enabled": false,
-      "windows_days": [
-        1,
-        7,
-        30
-      ],
-      "news_path": "data/signals/news_events.json",
-      "social_path": "data/signals/social_events.json",
-      "trade_events_path": "data/signals/trade_events.json",
-      "output_path": "outputs/backtests/real_signal_features.json"
+      "enabled": true
     },
-    "category_models": {
-      "enabled": false,
-      "default_multiplier": 1.0,
-      "multipliers": {
-        "sports": 1.02,
-        "politics": 0.98,
-        "crypto": 1.01,
-        "business": 1.0
-      }
+    "whales": {
+      "enabled": true
     },
     "blend": {
-      "external_weight": 0.3,
-      "news_external_weight": 0.3,
-      "reddit_external_weight": 0.3,
-      "trader_external_weight": 0.3
+      "news_external_weight": 0.2,
+      "reddit_external_weight": 0.4,
+      "trader_external_weight": 0.4
     }
   }
 }

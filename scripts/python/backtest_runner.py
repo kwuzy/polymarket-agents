@@ -297,10 +297,20 @@ def synth_signals(market: Dict, implied: float, seed: int, ext_ctx: Dict = None,
     if ext_ctx:
         ext_nr = _external_news_reddit_for_market(market, ext_ctx)
         ext_tr = _external_trader_for_market(market, ext_ctx)
-        # blend synthetic + real; conservative weighting
-        news = clip(0.7 * news + 0.3 * (mid + ext_nr.get("news", 0.0) * 0.25))
-        reddit = clip(0.7 * reddit + 0.3 * (mid + ext_nr.get("reddit", 0.0) * 0.30))
-        trader = clip(0.7 * trader + 0.3 * (mid + ext_tr * 0.02))
+
+        blend_cfg = (((cfg or {}).get("features") or {}).get("blend") or {})
+        ext_w_default = float(blend_cfg.get("external_weight", 0.30) or 0.30)
+        ext_w_news = float(blend_cfg.get("news_external_weight", ext_w_default) or ext_w_default)
+        ext_w_reddit = float(blend_cfg.get("reddit_external_weight", ext_w_default) or ext_w_default)
+        ext_w_trader = float(blend_cfg.get("trader_external_weight", ext_w_default) or ext_w_default)
+
+        ext_w_news = max(0.0, min(1.0, ext_w_news))
+        ext_w_reddit = max(0.0, min(1.0, ext_w_reddit))
+        ext_w_trader = max(0.0, min(1.0, ext_w_trader))
+
+        news = clip((1.0 - ext_w_news) * news + ext_w_news * (mid + ext_nr.get("news", 0.0) * 0.25))
+        reddit = clip((1.0 - ext_w_reddit) * reddit + ext_w_reddit * (mid + ext_nr.get("reddit", 0.0) * 0.30))
+        trader = clip((1.0 - ext_w_trader) * trader + ext_w_trader * (mid + ext_tr * 0.02))
 
     micro = _microstructure_adjustment(market)
     cat_mult = _category_multiplier(cfg or {}, cat)
