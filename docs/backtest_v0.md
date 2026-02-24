@@ -106,6 +106,13 @@ A guardrail-aware live profile recommendation is produced from `single_ladder` r
 
 Validation split is configurable via `validation.holdout_fraction` (default 0.25), and holdout robustness is emitted to `backtest_<timestamp>_holdout.md`.
 
+Timestamped/date-range runs are configurable via `validation.date_range`:
+- `enabled` (bool)
+- `field` (e.g. `createdAt`, `startDate`, `updatedAt`, `endDate`)
+- `start` / `end` (ISO-8601)
+
+When enabled, the runner filters snapshot markets by the selected timestamp field before train/holdout splitting, and reports the requested + applied time window in `backtest_<timestamp>_summary.md` and in JSON under `dataset.date_filter`.
+
 
 Walk-forward config fields:
 - `validation.walk_forward.enabled`
