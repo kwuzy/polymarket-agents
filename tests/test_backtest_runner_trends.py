@@ -54,6 +54,22 @@ class TestRunIndexTrends(unittest.TestCase):
         self.assertEqual(payload["alert_level"], "critical")
         self.assertEqual(payload["decision_streak"], {"decision": "NO_GO", "length": 5})
 
+    def test_normalizes_unknown_decisions_and_clamps_readiness(self):
+        rows = [
+            {"timestamp_utc": "t1", "readiness_score": "-10", "decision": "", "guardrail_blocked": "no"},
+            {"timestamp_utc": "t2", "readiness_score": "999", "decision": "   ", "guardrail_blocked": "yes"},
+            {"timestamp_utc": "t3", "readiness_score": "oops", "decision": "GO", "guardrail_blocked": " false "},
+        ]
+        td, path = self._write_rows(rows)
+        try:
+            payload = summarize_run_index(path)
+        finally:
+            td.cleanup()
+
+        self.assertEqual(payload["decision_counts"].get("UNKNOWN"), 2)
+        self.assertEqual(payload["decision_counts"].get("GO"), 1)
+        self.assertAlmostEqual(payload["avg_readiness"], (0.0 + 100.0 + 0.0) / 3.0)
+
 
 if __name__ == "__main__":
     unittest.main()

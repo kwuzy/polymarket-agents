@@ -1797,13 +1797,15 @@ def summarize_run_index(index_csv: Path, tail_n: int = 20) -> Dict:
     decisions_ordered = []
     for r in rows:
         try:
-            readiness_vals.append(float(r.get("readiness_score", 0) or 0))
+            readiness_raw = float(r.get("readiness_score", 0) or 0)
         except Exception:
-            readiness_vals.append(0.0)
-        d = r.get("decision", "") or ""
+            readiness_raw = 0.0
+        readiness_vals.append(max(0.0, min(100.0, readiness_raw)))
+
+        d = (r.get("decision", "") or "").strip() or "UNKNOWN"
         decisions_ordered.append(d)
         decision_counts[d] = decision_counts.get(d, 0) + 1
-        blocked_flag = str(r.get("guardrail_blocked", "False")).lower() in {"1", "true", "yes"}
+        blocked_flag = str(r.get("guardrail_blocked", "False")).strip().lower() in {"1", "true", "yes"}
         blocked_flags.append(blocked_flag)
         blocked += int(blocked_flag)
 
