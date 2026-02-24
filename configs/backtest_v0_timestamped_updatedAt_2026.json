@@ -1,0 +1,112 @@
+{
+  "seed": 42,
+  "snapshot_path": "data/snapshots/gamma_markets_fixture.json",
+  "filters": {
+    "min_prob": 0.35,
+    "max_prob": 0.65,
+    "max_spread": 0.65
+  },
+  "risk": {
+    "starting_bankroll": 1000.0,
+    "risk_unit_pct": 0.0001,
+    "capital_utilization": 0.2,
+    "max_drawdown": 0.2,
+    "daily_loss_cap": 0.1,
+    "freeze_ru_within_ladder": true
+  },
+  "execution": {
+    "mode": "all_trades",
+    "max_concurrent_ladders": 4,
+    "num_lines": 10,
+    "line_assignment": "round_robin",
+    "fee_bps": 0,
+    "slippage_bps": 0,
+    "slippage_model": {
+      "enabled": true,
+      "spread_weight": 0.6,
+      "depth_reference_usdc": 50000,
+      "impact_reference_usdc": 50,
+      "impact_power": 0.5,
+      "max_slippage_bps": 40
+    },
+    "adaptive_controls": {
+      "loss_streak_for_throttle": 4,
+      "ru_throttle_multiplier": 0.9,
+      "soft_ladder_cap": true,
+      "regime_pause_enabled": true,
+      "regime_window": 50,
+      "regime_min_win_rate": 0.33,
+      "regime_cooldown_markets": 8
+    }
+  },
+  "weights": {
+    "market": 0.45,
+    "cross": 0.3,
+    "news": 0.1,
+    "reddit": 0.05,
+    "trader": 0.1
+  },
+  "weight_sweep": {
+    "enabled": true,
+    "step": 0.05,
+    "max_variants": 250
+  },
+  "validation": {
+    "holdout_fraction": 0.25,
+    "date_range": {
+      "enabled": true,
+      "field": "updatedAt",
+      "start": "2026-01-01T00:00:00Z",
+      "end": "2026-12-31T23:59:59Z"
+    },
+    "folds": 4,
+    "cost_scenarios": [
+      {
+        "label": "ideal",
+        "fee_bps": 0,
+        "slippage_bps": 0
+      },
+      {
+        "label": "light_cost",
+        "fee_bps": 5,
+        "slippage_bps": 5
+      },
+      {
+        "label": "moderate_cost",
+        "fee_bps": 10,
+        "slippage_bps": 15
+      },
+      {
+        "label": "stress_cost",
+        "fee_bps": 20,
+        "slippage_bps": 25
+      },
+      {
+        "label": "severe_stress",
+        "fee_bps": 30,
+        "slippage_bps": 40
+      }
+    ],
+    "walk_forward": {
+      "enabled": true,
+      "train_size": 250,
+      "test_size": 60,
+      "step_size": 60
+    },
+    "guardrail_alerts": {
+      "max_drawdown": 0.2,
+      "min_trades": 20,
+      "min_win_rate": 0.45,
+      "min_readiness_score": 75
+    }
+  },
+  "features": {
+    "sources": {
+      "market": "live_market_price",
+      "cross": "synthetic_proxy",
+      "news": "synthetic_proxy",
+      "reddit": "synthetic_proxy",
+      "trader": "synthetic_proxy"
+    }
+  }
+}

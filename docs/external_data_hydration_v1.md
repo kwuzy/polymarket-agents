@@ -9,6 +9,7 @@ python3 scripts/python/hydrate_external_data.py \
   --snapshot data/snapshots/gamma_markets_fixture.json \
   --start 2025-01-01T00:00:00Z \
   --end 2025-12-31T23:59:59Z \
+  --trade-ts-field createdAt \
   --wallets-file data/whales/watchlist.json
 ```
 
