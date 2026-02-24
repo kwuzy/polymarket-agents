@@ -209,9 +209,9 @@ def build_external_signal_context(cfg: Dict) -> Dict:
     real_cfg = (feats.get("real_signals") or {})
     whale_cfg = (feats.get("whales") or {})
 
-    news_rows = _load_json_rows(real_cfg.get("news_path", "")) if real_cfg.get("enabled", False) else []
-    social_rows = _load_json_rows(real_cfg.get("social_path", "")) if real_cfg.get("enabled", False) else []
-    whale_rows = _load_json_rows(((whale_cfg.get("source") or {}).get("activity_cache", ""))) if whale_cfg.get("enabled", False) else []
+    news_rows = _load_json_rows(real_cfg.get("news_path", "data/signals/news_events.json")) if real_cfg.get("enabled", False) else []
+    social_rows = _load_json_rows(real_cfg.get("social_path", "data/signals/social_events.json")) if real_cfg.get("enabled", False) else []
+    whale_rows = _load_json_rows(((whale_cfg.get("source") or {}).get("activity_cache", "data/whales/whale_activity.json"))) if whale_cfg.get("enabled", False) else []
 
     return {
         "news_rows": news_rows,

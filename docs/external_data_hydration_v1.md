@@ -11,6 +11,14 @@ python3 scripts/python/hydrate_external_data.py \
   --end 2025-12-31T23:59:59Z \
   --trade-ts-field createdAt \
   --wallets-file data/whales/watchlist.json
+
+# Optional: auto-populate watchlist from leaderboard
+python3 scripts/python/hydrate_external_data.py \
+  --start 2026-01-01T00:00:00Z \
+  --end 2026-12-31T23:59:59Z \
+  --trade-ts-field updatedAt \
+  --auto-leaderboard-wallets \
+  --leaderboard-limit 25
 ```
 
 ## Outputs

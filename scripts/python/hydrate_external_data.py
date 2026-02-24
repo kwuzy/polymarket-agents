@@ -8,9 +8,21 @@ from xml.etree import ElementTree as ET
 
 
 def parse_iso(value):
-    if not value:
+    if value is None:
         return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except Exception:
+            return None
     v = str(value).strip()
+    if not v:
+        return None
+    if v.isdigit():
+        try:
+            return datetime.fromtimestamp(float(v), tz=timezone.utc)
+        except Exception:
+            return None
     if v.endswith('Z'):
         v = v[:-1] + '+00:00'
     try:
@@ -153,6 +165,21 @@ def fetch_reddit_social(start=None, end=None):
     return out
 
 
+def fetch_leaderboard_wallets(limit=25):
+    try:
+        q = urlencode({'limit': str(limit), 'offset': '0'})
+        url = f"https://data-api.polymarket.com/v1/leaderboard?{q}"
+        rows = fetch_json(url)
+        out = []
+        for r in rows if isinstance(rows, list) else []:
+            w = str(r.get('proxyWallet') or '').lower().strip()
+            if w:
+                out.append(w)
+        return out
+    except Exception:
+        return []
+
+
 def fetch_whale_activity(wallets, start=None, end=None):
     out = []
     for w in wallets:
@@ -191,6 +218,8 @@ def main():
     ap.add_argument('--end', default='2025-12-31T23:59:59Z')
     ap.add_argument('--wallets-file', default='data/whales/watchlist.json')
     ap.add_argument('--trade-ts-field', default='createdAt', choices=['createdAt','updatedAt','startDate','endDate'])
+    ap.add_argument('--auto-leaderboard-wallets', action='store_true')
+    ap.add_argument('--leaderboard-limit', type=int, default=25)
     args = ap.parse_args()
 
     start = parse_iso(args.start)
@@ -207,6 +236,12 @@ def main():
         wallets = json.loads(wpath.read_text())
         if isinstance(wallets, dict):
             wallets = wallets.get('wallets', [])
+
+    if (not wallets) and args.auto_leaderboard_wallets:
+        wallets = fetch_leaderboard_wallets(limit=args.leaderboard_limit)
+        wpath.parent.mkdir(parents=True, exist_ok=True)
+        wpath.write_text(json.dumps({'wallets': wallets}, indent=2))
+
     whale_rows = fetch_whale_activity([str(x) for x in wallets], start=start, end=end) if wallets else []
 
     Path('data/signals').mkdir(parents=True, exist_ok=True)
