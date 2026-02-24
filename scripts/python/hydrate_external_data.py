@@ -60,10 +60,10 @@ def load_snapshot(path):
     return json.loads(Path(path).read_text())
 
 
-def build_trade_events(snapshot, start=None, end=None):
+def build_trade_events(snapshot, start=None, end=None, ts_field='createdAt'):
     rows = []
     for m in snapshot:
-        ts = parse_iso(m.get('createdAt') or m.get('startDate') or m.get('updatedAt'))
+        ts = parse_iso(m.get(ts_field) or m.get('createdAt') or m.get('startDate') or m.get('updatedAt'))
         if ts is None:
             continue
         if start and ts < start:
@@ -190,13 +190,14 @@ def main():
     ap.add_argument('--start', default='2025-01-01T00:00:00Z')
     ap.add_argument('--end', default='2025-12-31T23:59:59Z')
     ap.add_argument('--wallets-file', default='data/whales/watchlist.json')
+    ap.add_argument('--trade-ts-field', default='createdAt', choices=['createdAt','updatedAt','startDate','endDate'])
     args = ap.parse_args()
 
     start = parse_iso(args.start)
     end = parse_iso(args.end)
 
     snapshot = load_snapshot(args.snapshot)
-    trade_events = build_trade_events(snapshot, start=start, end=end)
+    trade_events = build_trade_events(snapshot, start=start, end=end, ts_field=args.trade_ts_field)
     news = fetch_rss_news(start=start, end=end)
     social = fetch_reddit_social(start=start, end=end)
 
@@ -216,6 +217,7 @@ def main():
     Path('data/whales/whale_activity.json').write_text(json.dumps(whale_rows, indent=2))
 
     summary = {
+        'trade_ts_field': args.trade_ts_field,
         'trade_events': len(trade_events),
         'news_events': len(news),
         'social_events': len(social),
