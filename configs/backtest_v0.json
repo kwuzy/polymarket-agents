@@ -154,6 +154,12 @@
       "news_external_weight": 0.3,
       "reddit_external_weight": 0.3,
       "trader_external_weight": 0.3
+    },
+    "freshness": {
+      "enabled": true,
+      "news_max_age_days": 30,
+      "social_max_age_days": 14,
+      "whale_max_age_days": 30
     }
   }
 }

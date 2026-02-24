@@ -172,6 +172,13 @@ When `features.whales.enabled=true`, `trader` signal is blended with whale activ
 `features.category_models` adds category-specific multipliers (e.g. sports/politics/crypto/business).
 `cross/news/reddit/trader` also include a microstructure adjustment derived from spread + depth proxies (volume/liquidity).
 
+`features.freshness` enforces max data age per source for point-in-time features:
+- `news_max_age_days`
+- `social_max_age_days`
+- `whale_max_age_days`
+
+Rows older than the configured age at trade time are excluded from signal blending.
+
 Live readiness gate outputs are emitted to:
 - `backtest_<timestamp>_live_readiness.md`
 - `backtest_<timestamp>_live_readiness.json`

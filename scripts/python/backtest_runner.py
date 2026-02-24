@@ -204,6 +204,16 @@ def _mean(values: List[float]) -> float:
     return (sum(values) / len(values)) if values else 0.0
 
 
+def _max_age_days(cfg: Dict, key: str, default_days: int) -> int:
+    fr = (((cfg or {}).get("features") or {}).get("freshness") or {})
+    if not fr.get("enabled", True):
+        return 10_000
+    try:
+        return int(fr.get(key, default_days) or default_days)
+    except Exception:
+        return default_days
+
+
 def build_external_signal_context(cfg: Dict) -> Dict:
     feats = (cfg.get("features") or {})
     real_cfg = (feats.get("real_signals") or {})
@@ -218,6 +228,9 @@ def build_external_signal_context(cfg: Dict) -> Dict:
         "social_rows": social_rows,
         "whale_rows": whale_rows,
         "date_field": (((cfg.get("validation") or {}).get("date_range") or {}).get("field", "createdAt")),
+        "news_max_age_days": _max_age_days(cfg, "news_max_age_days", 30),
+        "social_max_age_days": _max_age_days(cfg, "social_max_age_days", 14),
+        "whale_max_age_days": _max_age_days(cfg, "whale_max_age_days", 30),
     }
 
 
@@ -226,34 +239,38 @@ def _external_news_reddit_for_market(market: Dict, ctx: Dict) -> Dict[str, float
     if ts is None:
         return {"news": 0.0, "reddit": 0.0}
     cat = category_of(market)
-    w7 = ts - timedelta(days=7)
+    news_max_age = int(ctx.get("news_max_age_days", 30) or 30)
+    social_max_age = int(ctx.get("social_max_age_days", 14) or 14)
+    w_news = ts - timedelta(days=news_max_age)
+    w_social = ts - timedelta(days=social_max_age)
 
     nrows = [r for r in (ctx.get("news_rows") or []) if (_parse_iso_ts(r.get("ts") or r.get("published_at") or r.get("createdAt")) or datetime.min) <= ts]
-    nrows = [r for r in nrows if (_parse_iso_ts(r.get("ts") or r.get("published_at") or r.get("createdAt")) or datetime.min) >= w7]
+    nrows = [r for r in nrows if (_parse_iso_ts(r.get("ts") or r.get("published_at") or r.get("createdAt")) or datetime.min) >= w_news]
     nrows = [r for r in nrows if str(r.get("category") or "other").lower() == cat]
 
     srows = [r for r in (ctx.get("social_rows") or []) if (_parse_iso_ts(r.get("ts") or r.get("created_at") or r.get("createdAt")) or datetime.min) <= ts]
-    srows = [r for r in srows if (_parse_iso_ts(r.get("ts") or r.get("created_at") or r.get("createdAt")) or datetime.min) >= w7]
+    srows = [r for r in srows if (_parse_iso_ts(r.get("ts") or r.get("created_at") or r.get("createdAt")) or datetime.min) >= w_social]
     srows = [r for r in srows if str(r.get("category") or "other").lower() == cat]
 
     news_sent = _mean([float(r.get("sentiment", 0.0) or 0.0) for r in nrows])
     soc_sent = _mean([float(r.get("sentiment", 0.0) or 0.0) for r in srows])
-    return {"news": news_sent, "reddit": soc_sent}
+    return {"news": news_sent, "reddit": soc_sent, "news_count": len(nrows), "social_count": len(srows)}
 
 
-def _external_trader_for_market(market: Dict, ctx: Dict) -> float:
+def _external_trader_for_market(market: Dict, ctx: Dict) -> Dict[str, float]:
     ts = _market_timestamp(market, ctx.get("date_field", "createdAt"))
     if ts is None:
-        return 0.0
+        return {"value": 0.0, "count": 0}
     cat = category_of(market)
-    w30 = ts - timedelta(days=30)
+    whale_max_age = int(ctx.get("whale_max_age_days", 30) or 30)
+    w30 = ts - timedelta(days=whale_max_age)
     rows = [r for r in (ctx.get("whale_rows") or []) if str(r.get("category") or "other").lower() == cat]
     rows = [r for r in rows if (_parse_iso_ts(r.get("ts") or r.get("createdAt") or r.get("timestamp")) or datetime.min) <= ts]
     rows = [r for r in rows if (_parse_iso_ts(r.get("ts") or r.get("createdAt") or r.get("timestamp")) or datetime.min) >= w30]
     if not rows:
-        return 0.0
+        return {"value": 0.0, "count": 0}
     vals = [float(r.get("pnl", 0.0) or 0.0) for r in rows]
-    return _mean(vals)
+    return {"value": _mean(vals), "count": len(rows)}
 
 
 def _microstructure_adjustment(market: Dict) -> float:
@@ -308,9 +325,12 @@ def synth_signals(market: Dict, implied: float, seed: int, ext_ctx: Dict = None,
         ext_w_reddit = max(0.0, min(1.0, ext_w_reddit))
         ext_w_trader = max(0.0, min(1.0, ext_w_trader))
 
-        news = clip((1.0 - ext_w_news) * news + ext_w_news * (mid + ext_nr.get("news", 0.0) * 0.25))
-        reddit = clip((1.0 - ext_w_reddit) * reddit + ext_w_reddit * (mid + ext_nr.get("reddit", 0.0) * 0.30))
-        trader = clip((1.0 - ext_w_trader) * trader + ext_w_trader * (mid + ext_tr * 0.02))
+        if int(ext_nr.get("news_count", 0) or 0) > 0:
+            news = clip((1.0 - ext_w_news) * news + ext_w_news * (mid + ext_nr.get("news", 0.0) * 0.25))
+        if int(ext_nr.get("social_count", 0) or 0) > 0:
+            reddit = clip((1.0 - ext_w_reddit) * reddit + ext_w_reddit * (mid + ext_nr.get("reddit", 0.0) * 0.30))
+        if int(ext_tr.get("count", 0) or 0) > 0:
+            trader = clip((1.0 - ext_w_trader) * trader + ext_w_trader * (mid + float(ext_tr.get("value", 0.0)) * 0.02))
 
     micro = _microstructure_adjustment(market)
     cat_mult = _category_multiplier(cfg or {}, cat)
