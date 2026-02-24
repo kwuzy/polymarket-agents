@@ -5,7 +5,7 @@ import json
 import math
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -187,7 +187,76 @@ def category_of(market: Dict) -> str:
     return infer_category_from_text(market_text)
 
 
-def synth_signals(market: Dict, implied: float, seed: int) -> Dict[str, float]:
+def _load_json_rows(path: str) -> List[Dict]:
+    if not path:
+        return []
+    try:
+        p = Path(path)
+        if not p.exists():
+            return []
+        payload = json.loads(p.read_text())
+        return payload if isinstance(payload, list) else []
+    except Exception:
+        return []
+
+
+def _mean(values: List[float]) -> float:
+    return (sum(values) / len(values)) if values else 0.0
+
+
+def build_external_signal_context(cfg: Dict) -> Dict:
+    feats = (cfg.get("features") or {})
+    real_cfg = (feats.get("real_signals") or {})
+    whale_cfg = (feats.get("whales") or {})
+
+    news_rows = _load_json_rows(real_cfg.get("news_path", "")) if real_cfg.get("enabled", False) else []
+    social_rows = _load_json_rows(real_cfg.get("social_path", "")) if real_cfg.get("enabled", False) else []
+    whale_rows = _load_json_rows(((whale_cfg.get("source") or {}).get("activity_cache", ""))) if whale_cfg.get("enabled", False) else []
+
+    return {
+        "news_rows": news_rows,
+        "social_rows": social_rows,
+        "whale_rows": whale_rows,
+        "date_field": (((cfg.get("validation") or {}).get("date_range") or {}).get("field", "createdAt")),
+    }
+
+
+def _external_news_reddit_for_market(market: Dict, ctx: Dict) -> Dict[str, float]:
+    ts = _market_timestamp(market, ctx.get("date_field", "createdAt"))
+    if ts is None:
+        return {"news": 0.0, "reddit": 0.0}
+    cat = category_of(market)
+    w7 = ts - timedelta(days=7)
+
+    nrows = [r for r in (ctx.get("news_rows") or []) if (_parse_iso_ts(r.get("ts") or r.get("published_at") or r.get("createdAt")) or datetime.min) <= ts]
+    nrows = [r for r in nrows if (_parse_iso_ts(r.get("ts") or r.get("published_at") or r.get("createdAt")) or datetime.min) >= w7]
+    nrows = [r for r in nrows if str(r.get("category") or "other").lower() == cat]
+
+    srows = [r for r in (ctx.get("social_rows") or []) if (_parse_iso_ts(r.get("ts") or r.get("created_at") or r.get("createdAt")) or datetime.min) <= ts]
+    srows = [r for r in srows if (_parse_iso_ts(r.get("ts") or r.get("created_at") or r.get("createdAt")) or datetime.min) >= w7]
+    srows = [r for r in srows if str(r.get("category") or "other").lower() == cat]
+
+    news_sent = _mean([float(r.get("sentiment", 0.0) or 0.0) for r in nrows])
+    soc_sent = _mean([float(r.get("sentiment", 0.0) or 0.0) for r in srows])
+    return {"news": news_sent, "reddit": soc_sent}
+
+
+def _external_trader_for_market(market: Dict, ctx: Dict) -> float:
+    ts = _market_timestamp(market, ctx.get("date_field", "createdAt"))
+    if ts is None:
+        return 0.0
+    cat = category_of(market)
+    w30 = ts - timedelta(days=30)
+    rows = [r for r in (ctx.get("whale_rows") or []) if str(r.get("category") or "other").lower() == cat]
+    rows = [r for r in rows if (_parse_iso_ts(r.get("ts") or r.get("createdAt") or r.get("timestamp")) or datetime.min) <= ts]
+    rows = [r for r in rows if (_parse_iso_ts(r.get("ts") or r.get("createdAt") or r.get("timestamp")) or datetime.min) >= w30]
+    if not rows:
+        return 0.0
+    vals = [float(r.get("pnl", 0.0) or 0.0) for r in rows]
+    return _mean(vals)
+
+
+def synth_signals(market: Dict, implied: float, seed: int, ext_ctx: Dict = None) -> Dict[str, float]:
     mid = implied
     market_id = str(market.get("id", "0"))
     cat = category_of(market)
@@ -198,17 +267,30 @@ def synth_signals(market: Dict, implied: float, seed: int) -> Dict[str, float]:
     u4 = hash_to_unit(f"{seed}:{market_id}:trader")
     uc = hash_to_unit(f"{seed}:{cat}:cat")
 
+    news = clip(mid + (u2 - 0.5) * 0.35)
+    reddit = clip(mid + (u3 - 0.5) * 0.45)
+    trader = clip(mid + (u4 - 0.5) * 0.25)
+
+    if ext_ctx:
+        ext_nr = _external_news_reddit_for_market(market, ext_ctx)
+        ext_tr = _external_trader_for_market(market, ext_ctx)
+        # blend synthetic + real; conservative weighting
+        news = clip(0.7 * news + 0.3 * (mid + ext_nr.get("news", 0.0) * 0.25))
+        reddit = clip(0.7 * reddit + 0.3 * (mid + ext_nr.get("reddit", 0.0) * 0.30))
+        trader = clip(0.7 * trader + 0.3 * (mid + ext_tr * 0.02))
+
     return {
         "market": mid,
         "cross": clip(mid + (u1 - 0.5) * 0.16 + (uc - 0.5) * 0.05),
-        "news": clip(mid + (u2 - 0.5) * 0.35),
-        "reddit": clip(mid + (u3 - 0.5) * 0.45),
-        "trader": clip(mid + (u4 - 0.5) * 0.25),
+        "news": news,
+        "reddit": reddit,
+        "trader": trader,
     }
 
 
 def signal_source_map(cfg: Dict) -> Dict[str, str]:
-    fmap = (((cfg or {}).get("features") or {}).get("sources") or {})
+    feats = ((cfg or {}).get("features") or {})
+    fmap = (feats.get("sources") or {})
     default = {
         "market": "live_market_price",
         "cross": "synthetic_proxy",
@@ -217,6 +299,13 @@ def signal_source_map(cfg: Dict) -> Dict[str, str]:
         "trader": "synthetic_proxy",
     }
     default.update({k: str(v) for k, v in fmap.items() if k in default})
+
+    if (feats.get("real_signals") or {}).get("enabled", False):
+        default["news"] = "live_news_sentiment_blend"
+        default["reddit"] = "live_social_sentiment_blend"
+    if (feats.get("whales") or {}).get("enabled", False):
+        default["trader"] = "live_whale_activity_blend"
+
     return default
 
 
@@ -500,6 +589,8 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
     results: List[TradeResult] = []
     effective_slippage_bps_sum = 0.0
     by_category = {}
+    ext_ctx = build_external_signal_context(cfg)
+
     diagnostics = {
         "total_markets": 0,
         "candidate_markets": 0,
@@ -569,7 +660,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
             stop_reason = "risk_cap"
             break
 
-        signals = synth_signals(market, implied, seed)
+        signals = synth_signals(market, implied, seed, ext_ctx=ext_ctx)
         p_hat = weighted_prob(signals, weights)
 
         if p_hat == implied:
