@@ -369,6 +369,17 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
     max_ladder_depth = 0
     stop_reason = "completed"
 
+    controls = exec_cfg.get("adaptive_controls", {}) or {}
+    throttle_loss_streak = int(controls.get("loss_streak_for_throttle", 4) or 4)
+    throttle_ru_mult = float(controls.get("ru_throttle_multiplier", 0.7) or 0.7)
+    soft_cap_enabled = bool(controls.get("soft_ladder_cap", True))
+    regime_pause_enabled = bool(controls.get("regime_pause_enabled", False))
+    regime_window = int(controls.get("regime_window", 25) or 25)
+    regime_min_win_rate = float(controls.get("regime_min_win_rate", 0.40) or 0.40)
+    regime_cooldown_markets = int(controls.get("regime_cooldown_markets", 25) or 25)
+    regime_recent_outcomes: List[int] = []
+    regime_cooldown_remaining = 0
+
     # multi_line mode: independent line states and bankroll buckets
     line_bankrolls = []
     line_rus = []
@@ -400,6 +411,10 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
         "skipped_filter": 0,
         "skipped_no_edge": 0,
         "skipped_invalid_price": 0,
+        "skipped_regime_pause": 0,
+        "regime_pause_triggers": 0,
+        "soft_cap_hits": 0,
+        "ru_throttle_trades": 0,
         "avg_effective_slippage_bps": 0.0,
     }
 
@@ -412,6 +427,11 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
             diagnostics["skipped_filter"] += 1
             continue
         diagnostics["candidate_markets"] += 1
+
+        if mode == "single_ladder" and regime_pause_enabled and regime_cooldown_remaining > 0:
+            regime_cooldown_remaining -= 1
+            diagnostics["skipped_regime_pause"] += 1
+            continue
 
         if mode == "single_ladder":
             active_bankroll = bankroll
@@ -431,6 +451,12 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
             step_for_trade = line_steps[line_idx]
 
         k_max = ladder_k_max(active_bankroll, active_ru, alpha)
+        if mode == "single_ladder" and soft_cap_enabled and k_max >= 1:
+            soft_k_max = max(0, k_max - 1)
+            if step_for_trade > soft_k_max:
+                step_for_trade = soft_k_max
+                diagnostics["soft_cap_hits"] += 1
+
         if step_for_trade > k_max:
             if mode == "multi_line":
                 continue
@@ -438,6 +464,10 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
             break
 
         risk_amount = active_ru * (2**step_for_trade)
+        if mode == "single_ladder" and throttle_ru_mult < 1.0 and current_loss_streak >= throttle_loss_streak:
+            risk_amount *= max(0.0, throttle_ru_mult)
+            diagnostics["ru_throttle_trades"] += 1
+
         if risk_amount > alpha * active_bankroll:
             if mode == "multi_line":
                 continue
@@ -504,6 +534,20 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
                 if mode == "single_ladder":
                     ladder_step += 1
                     max_ladder_depth = max(max_ladder_depth, ladder_step)
+
+        if mode == "single_ladder" and regime_pause_enabled and regime_window > 0:
+            regime_recent_outcomes.append(1 if won else 0)
+            if len(regime_recent_outcomes) > regime_window:
+                regime_recent_outcomes = regime_recent_outcomes[-regime_window:]
+            if len(regime_recent_outcomes) >= regime_window:
+                window_wr = sum(regime_recent_outcomes) / len(regime_recent_outcomes)
+                if window_wr < regime_min_win_rate and regime_cooldown_remaining == 0:
+                    regime_cooldown_remaining = regime_cooldown_markets
+                    diagnostics["regime_pause_triggers"] += 1
+                    ladder_step = 0
+                    current_loss_streak = 0
+                    if risk_cfg.get("freeze_ru_within_ladder", True):
+                        ru = bankroll * risk_cfg["risk_unit_pct"]
 
         dd = (peak - bankroll) / peak if peak > 0 else 0
         day_loss = (daily_start - bankroll) / daily_start if daily_start > 0 else 0

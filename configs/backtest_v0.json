@@ -28,6 +28,15 @@
       "impact_reference_usdc": 50,
       "impact_power": 0.5,
       "max_slippage_bps": 40
+    },
+    "adaptive_controls": {
+      "loss_streak_for_throttle": 4,
+      "ru_throttle_multiplier": 0.7,
+      "soft_ladder_cap": true,
+      "regime_pause_enabled": true,
+      "regime_window": 25,
+      "regime_min_win_rate": 0.4,
+      "regime_cooldown_markets": 25
     }
   },
   "weights": {
