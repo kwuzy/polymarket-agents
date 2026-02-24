@@ -268,6 +268,101 @@ def weighted_prob(signals: Dict[str, float], weights: Dict[str, float]) -> float
     return clip(sum(signals[k] * weights[k] for k in weights.keys()))
 
 
+def _parse_iso_ts(value: str):
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+
+def _market_timestamp(market: Dict, field: str):
+    fields = [field] if field else []
+    fields += ["createdAt", "startDate", "updatedAt", "endDate"]
+    seen = set()
+    for f in fields:
+        if not f or f in seen:
+            continue
+        seen.add(f)
+        ts = _parse_iso_ts(market.get(f))
+        if ts:
+            return ts
+    evs = market.get("events") or []
+    if evs and isinstance(evs, list):
+        e0 = evs[0] or {}
+        for f in fields:
+            if not f:
+                continue
+            ts = _parse_iso_ts(e0.get(f))
+            if ts:
+                return ts
+    return None
+
+
+def apply_date_range_filter(snapshot: List[Dict], cfg: Dict):
+    dr = (cfg.get("validation", {}) or {}).get("date_range", {}) or {}
+    enabled = bool(dr.get("enabled", False))
+    field = dr.get("field", "createdAt")
+    start_ts = _parse_iso_ts(dr.get("start"))
+    end_ts = _parse_iso_ts(dr.get("end"))
+
+    rows_with_ts = []
+    for m in snapshot:
+        ts = _market_timestamp(m, field)
+        rows_with_ts.append((m, ts))
+
+    available = [ts for _, ts in rows_with_ts if ts is not None]
+    source_min = min(available).isoformat() if available else None
+    source_max = max(available).isoformat() if available else None
+
+    if not enabled or (start_ts is None and end_ts is None):
+        return snapshot, {
+            "enabled": False,
+            "field": field,
+            "start": dr.get("start"),
+            "end": dr.get("end"),
+            "input_count": len(snapshot),
+            "filtered_count": len(snapshot),
+            "source_min": source_min,
+            "source_max": source_max,
+            "applied_min": source_min,
+            "applied_max": source_max,
+        }
+
+    filtered = []
+    kept_ts = []
+    for m, ts in rows_with_ts:
+        if ts is None:
+            continue
+        if start_ts and ts < start_ts:
+            continue
+        if end_ts and ts > end_ts:
+            continue
+        filtered.append(m)
+        kept_ts.append(ts)
+
+    applied_min = min(kept_ts).isoformat() if kept_ts else None
+    applied_max = max(kept_ts).isoformat() if kept_ts else None
+    return filtered, {
+        "enabled": True,
+        "field": field,
+        "start": dr.get("start"),
+        "end": dr.get("end"),
+        "input_count": len(snapshot),
+        "filtered_count": len(filtered),
+        "source_min": source_min,
+        "source_max": source_max,
+        "applied_min": applied_min,
+        "applied_max": applied_max,
+    }
+
+
 def candidate_filter(market: Dict, implied: float, cfg: Dict) -> bool:
     if implied is None:
         return False
@@ -1607,6 +1702,21 @@ def write_run_summary_md(path: Path, report: Dict) -> None:
     lines.append(f"- Execution mode (primary run): `{top.get('execution_mode','')}`")
     lines.append("")
 
+    dataset = report.get("dataset") or {}
+    date_filter = dataset.get("date_filter") or {}
+    if date_filter:
+        lines.append("## Dataset time window")
+        lines.append("")
+        lines.append(f"- Date filter enabled: `{date_filter.get('enabled', False)}`")
+        lines.append(f"- Timestamp field: `{date_filter.get('field', 'createdAt')}`")
+        lines.append(f"- Requested start: `{date_filter.get('start')}`")
+        lines.append(f"- Requested end: `{date_filter.get('end')}`")
+        lines.append(f"- Available source range: `{date_filter.get('source_min')}` → `{date_filter.get('source_max')}`")
+        lines.append(f"- Applied range: `{date_filter.get('applied_min')}` → `{date_filter.get('applied_max')}`")
+        lines.append(f"- Markets before filter: {date_filter.get('input_count', 0)}")
+        lines.append(f"- Markets after filter: {date_filter.get('filtered_count', 0)}")
+        lines.append("")
+
     lines.append("## Baseline vs Best (primary run)")
     lines.append("")
     lines.append(f"- Baseline weights: `{baseline.get('weights',{})}`")
@@ -1977,6 +2087,7 @@ def main():
         fetch_gamma_snapshot(snapshot_path)
 
     snapshot = load_snapshot(snapshot_path)
+    snapshot, date_filter_meta = apply_date_range_filter(snapshot, cfg)
 
     holdout_fraction = cfg.get("validation", {}).get("holdout_fraction", 0.0)
     train_snapshot, holdout_snapshot = split_snapshot(snapshot, holdout_fraction)
@@ -2028,6 +2139,7 @@ def main():
         "train_markets": len(train_snapshot),
         "holdout_markets": len(holdout_snapshot),
         "holdout_fraction": holdout_fraction,
+        "date_filter": date_filter_meta,
     }
     baseline_result = next((x for x in leaderboard if x["weights"] == cfg["weights"]), None)
     feature_sources = signal_source_map(cfg)
@@ -2066,6 +2178,7 @@ def main():
 
     temp_report = {
         "timestamp_utc": ts,
+        "dataset": dataset_meta,
         "top10": leaderboard[:10],
         "baseline": baseline_result,
         "mode_comparison": comparison_payload,
