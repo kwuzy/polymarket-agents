@@ -256,7 +256,30 @@ def _external_trader_for_market(market: Dict, ctx: Dict) -> float:
     return _mean(vals)
 
 
-def synth_signals(market: Dict, implied: float, seed: int, ext_ctx: Dict = None) -> Dict[str, float]:
+def _microstructure_adjustment(market: Dict) -> float:
+    spread = parse_spread(market)
+    volume = parse_volume_num(market)
+    liquidity = parse_liquidity_num(market)
+
+    # better microstructure => slightly positive confidence drift
+    spread_score = max(-1.0, min(1.0, 0.03 - spread))
+    depth_proxy = max(1.0, volume + liquidity)
+    depth_score = max(-1.0, min(1.0, (depth_proxy / 200000.0) - 0.5))
+    return 0.6 * spread_score + 0.4 * depth_score
+
+
+def _category_multiplier(cfg: Dict, category: str) -> float:
+    cm = (((cfg or {}).get("features") or {}).get("category_models") or {})
+    if not cm.get("enabled", False):
+        return 1.0
+    mult = (cm.get("multipliers") or {}).get(category)
+    try:
+        return float(mult) if mult is not None else float(cm.get("default_multiplier", 1.0))
+    except Exception:
+        return 1.0
+
+
+def synth_signals(market: Dict, implied: float, seed: int, ext_ctx: Dict = None, cfg: Dict = None) -> Dict[str, float]:
     mid = implied
     market_id = str(market.get("id", "0"))
     cat = category_of(market)
@@ -279,9 +302,16 @@ def synth_signals(market: Dict, implied: float, seed: int, ext_ctx: Dict = None)
         reddit = clip(0.7 * reddit + 0.3 * (mid + ext_nr.get("reddit", 0.0) * 0.30))
         trader = clip(0.7 * trader + 0.3 * (mid + ext_tr * 0.02))
 
+    micro = _microstructure_adjustment(market)
+    cat_mult = _category_multiplier(cfg or {}, cat)
+    cross = clip((mid + (u1 - 0.5) * 0.16 + (uc - 0.5) * 0.05 + micro * 0.03) * cat_mult)
+    news = clip((news + micro * 0.01) * cat_mult)
+    reddit = clip((reddit + micro * 0.01) * cat_mult)
+    trader = clip((trader + micro * 0.005) * cat_mult)
+
     return {
         "market": mid,
-        "cross": clip(mid + (u1 - 0.5) * 0.16 + (uc - 0.5) * 0.05),
+        "cross": cross,
         "news": news,
         "reddit": reddit,
         "trader": trader,
@@ -660,7 +690,7 @@ def run_backtest(snapshot: List[Dict], cfg: Dict, weights: Dict[str, float]) -> 
             stop_reason = "risk_cap"
             break
 
-        signals = synth_signals(market, implied, seed, ext_ctx=ext_ctx)
+        signals = synth_signals(market, implied, seed, ext_ctx=ext_ctx, cfg=cfg)
         p_hat = weighted_prob(signals, weights)
 
         if p_hat == implied:

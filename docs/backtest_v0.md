@@ -169,6 +169,9 @@ Configure feature provenance in `features.sources` to track live vs synthetic si
 When `features.real_signals.enabled=true`, `news` and `reddit` signals are blended with external sentiment windows (PIT-safe).
 When `features.whales.enabled=true`, `trader` signal is blended with whale activity PnL windows (PIT-safe).
 
+`features.category_models` adds category-specific multipliers (e.g. sports/politics/crypto/business).
+`cross/news/reddit/trader` also include a microstructure adjustment derived from spread + depth proxies (volume/liquidity).
+
 Live readiness gate outputs are emitted to:
 - `backtest_<timestamp>_live_readiness.md`
 - `backtest_<timestamp>_live_readiness.json`
