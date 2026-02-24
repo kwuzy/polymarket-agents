@@ -138,6 +138,16 @@
       "social_path": "data/signals/social_events.json",
       "trade_events_path": "data/signals/trade_events.json",
       "output_path": "outputs/backtests/real_signal_features.json"
+    },
+    "category_models": {
+      "enabled": false,
+      "default_multiplier": 1.0,
+      "multipliers": {
+        "sports": 1.02,
+        "politics": 0.98,
+        "crypto": 1.01,
+        "business": 1.0
+      }
     }
   }
 }
