@@ -31,12 +31,12 @@
     },
     "adaptive_controls": {
       "loss_streak_for_throttle": 4,
-      "ru_throttle_multiplier": 0.85,
+      "ru_throttle_multiplier": 0.9,
       "soft_ladder_cap": true,
       "regime_pause_enabled": true,
       "regime_window": 50,
-      "regime_min_win_rate": 0.35,
-      "regime_cooldown_markets": 10
+      "regime_min_win_rate": 0.33,
+      "regime_cooldown_markets": 8
     }
   },
   "weights": {
