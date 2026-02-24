@@ -165,6 +165,8 @@ Feature source audit outputs are emitted to:
 
 Configure feature provenance in `features.sources` to track live vs synthetic signals and weight share realism in each run.
 
+`features.real_signals` config scaffolds point-in-time news/social feature generation paths for external signals (see `docs/real_signals_v1.md`).
+
 Live readiness gate outputs are emitted to:
 - `backtest_<timestamp>_live_readiness.md`
 - `backtest_<timestamp>_live_readiness.json`
