@@ -107,6 +107,25 @@
       "news": "synthetic_proxy",
       "reddit": "synthetic_proxy",
       "trader": "synthetic_proxy"
+    },
+    "whales": {
+      "enabled": false,
+      "windows_days": [
+        7,
+        30,
+        90
+      ],
+      "categories": [
+        "sports",
+        "politics",
+        "crypto",
+        "business"
+      ],
+      "top_n": 20,
+      "source": {
+        "leaderboard_provider": "polymarket_data_api",
+        "activity_cache": "data/whales/whale_activity.json"
+      }
     }
   }
 }
