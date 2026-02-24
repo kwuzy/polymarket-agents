@@ -1761,6 +1761,9 @@ def summarize_run_index(index_csv: Path, tail_n: int = 20) -> Dict:
             "recent_blocked_rate": 0.0,
             "recent_decisions": [],
             "trend_signal": "unknown",
+            "decision_streak": {"decision": "", "length": 0},
+            "blocked_streak": 0,
+            "alert_level": "none",
         }
 
     rows = []
@@ -1782,6 +1785,9 @@ def summarize_run_index(index_csv: Path, tail_n: int = 20) -> Dict:
             "recent_blocked_rate": 0.0,
             "recent_decisions": [],
             "trend_signal": "unknown",
+            "decision_streak": {"decision": "", "length": 0},
+            "blocked_streak": 0,
+            "alert_level": "none",
         }
 
     readiness_vals = []
@@ -1820,6 +1826,30 @@ def summarize_run_index(index_csv: Path, tail_n: int = 20) -> Dict:
     elif delta >= 7.5 and recent_blocked_rate <= 0.2:
         trend_signal = "improving"
 
+    decision_streak = {"decision": "", "length": 0}
+    if decisions_ordered:
+        last_decision = decisions_ordered[-1]
+        streak_len = 0
+        for d in reversed(decisions_ordered):
+            if d == last_decision:
+                streak_len += 1
+            else:
+                break
+        decision_streak = {"decision": last_decision, "length": streak_len}
+
+    blocked_streak = 0
+    for flag in reversed(blocked_flags):
+        if flag:
+            blocked_streak += 1
+        else:
+            break
+
+    alert_level = "none"
+    if trend_signal == "degrading" and blocked_streak >= 3:
+        alert_level = "critical"
+    elif trend_signal == "degrading" or blocked_streak >= 2:
+        alert_level = "warning"
+
     return {
         "count": len(rows),
         "avg_readiness": (sum(readiness_vals) / len(readiness_vals)) if readiness_vals else 0.0,
@@ -1831,6 +1861,9 @@ def summarize_run_index(index_csv: Path, tail_n: int = 20) -> Dict:
         "recent_blocked_rate": recent_blocked_rate,
         "recent_decisions": decisions_ordered[-3:],
         "trend_signal": trend_signal,
+        "decision_streak": decision_streak,
+        "blocked_streak": blocked_streak,
+        "alert_level": alert_level,
     }
 
 
@@ -1844,10 +1877,16 @@ def write_run_trends_md(path: Path, payload: Dict) -> None:
     lines.append(f"- readiness_delta={payload.get('readiness_delta', 0.0):+.2f}")
     lines.append(f"- recent_blocked_rate={payload.get('recent_blocked_rate', 0.0):.3f}")
     lines.append(f"- trend_signal={payload.get('trend_signal', 'unknown')}")
+    lines.append(f"- alert_level={payload.get('alert_level', 'none')}")
 
     recent_decisions = payload.get("recent_decisions") or []
     if recent_decisions:
         lines.append(f"- recent_decisions={' -> '.join(recent_decisions)}")
+
+    decision_streak = payload.get("decision_streak") or {}
+    if decision_streak.get("length", 0) > 0:
+        lines.append(f"- current_decision_streak={decision_streak.get('decision','')} x{decision_streak.get('length',0)}")
+    lines.append(f"- current_blocked_streak={payload.get('blocked_streak', 0)}")
 
     lines.append("")
     lines.append("## Decisions")
@@ -1858,7 +1897,10 @@ def write_run_trends_md(path: Path, payload: Dict) -> None:
         for k, v in sorted(dc.items()):
             lines.append(f"- {k}: {v}")
 
-    if payload.get("trend_signal") == "degrading":
+    if payload.get("alert_level") == "critical":
+        lines.append("")
+        lines.append("🚨 Critical alert: sustained guardrail blocks while trend is degrading. Pause promotion and investigate immediately.")
+    elif payload.get("trend_signal") == "degrading":
         lines.append("")
         lines.append("⚠️ Trend degrading: consider tightening risk caps and investigating recent guardrail failures.")
     elif payload.get("trend_signal") == "improving":
@@ -1961,7 +2003,6 @@ def main():
                 "fold_robustness": fold_robustness,
                 "walk_forward": walk_forward,
                 "multi_line_baseline": multi_line_baseline,
-        "feature_sources": feature_sources,
                 "feature_sources": feature_sources,
                 "live_readiness": compute_live_readiness({"baseline": baseline_result, "holdout": holdout_report, "walk_forward": walk_forward, "feature_sources": feature_sources}),
                 "decision_card": build_deployment_decision_card({"baseline": baseline_result, "holdout": holdout_report, "live_profile": live_profile, "live_readiness": compute_live_readiness({"baseline": baseline_result, "holdout": holdout_report, "walk_forward": walk_forward, "feature_sources": feature_sources})}),
