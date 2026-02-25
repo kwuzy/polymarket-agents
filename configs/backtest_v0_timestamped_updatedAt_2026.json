@@ -98,6 +98,16 @@
       "min_trades": 20,
       "min_win_rate": 0.45,
       "min_readiness_score": 75
+    },
+    "ablation_guardrails": {
+      "enabled": true,
+      "min_markets": 120,
+      "min_span_hours": 24.0,
+      "fallback_date_range": {
+        "field": "createdAt",
+        "start": "2025-01-01T00:00:00Z",
+        "end": "2025-12-31T23:59:59Z"
+      }
     }
   },
   "features": {
