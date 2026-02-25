@@ -321,6 +321,16 @@ def synth_signals(market: Dict, implied: float, seed: int, ext_ctx: Dict = None,
         ext_w_reddit = float(blend_cfg.get("reddit_external_weight", ext_w_default) or ext_w_default)
         ext_w_trader = float(blend_cfg.get("trader_external_weight", ext_w_default) or ext_w_default)
 
+        # Optional category-specific overrides
+        cat_over = (blend_cfg.get("category_overrides") or {}).get(cat, {}) if isinstance(blend_cfg.get("category_overrides"), dict) else {}
+        if isinstance(cat_over, dict):
+            if cat_over.get("news_external_weight") is not None:
+                ext_w_news = float(cat_over.get("news_external_weight"))
+            if cat_over.get("reddit_external_weight") is not None:
+                ext_w_reddit = float(cat_over.get("reddit_external_weight"))
+            if cat_over.get("trader_external_weight") is not None:
+                ext_w_trader = float(cat_over.get("trader_external_weight"))
+
         ext_w_news = max(0.0, min(1.0, ext_w_news))
         ext_w_reddit = max(0.0, min(1.0, ext_w_reddit))
         ext_w_trader = max(0.0, min(1.0, ext_w_trader))
