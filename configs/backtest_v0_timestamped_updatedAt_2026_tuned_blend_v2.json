@@ -117,7 +117,30 @@
     "blend": {
       "news_external_weight": 0.1,
       "reddit_external_weight": 0.1,
-      "trader_external_weight": 0.5
+      "trader_external_weight": 0.5,
+      "external_weight": 0.3,
+      "category_overrides": {
+        "sports": {
+          "news_external_weight": 0.1,
+          "reddit_external_weight": 0.2,
+          "trader_external_weight": 0.6
+        },
+        "politics": {
+          "news_external_weight": 0.2,
+          "reddit_external_weight": 0.1,
+          "trader_external_weight": 0.4
+        },
+        "crypto": {
+          "news_external_weight": 0.1,
+          "reddit_external_weight": 0.2,
+          "trader_external_weight": 0.5
+        },
+        "business": {
+          "news_external_weight": 0.2,
+          "reddit_external_weight": 0.1,
+          "trader_external_weight": 0.4
+        }
+      }
     }
   }
 }
